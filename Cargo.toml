@@ -1,0 +1,16 @@
+[package]
+name = "makepad-urdf-player"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[features]
+default = []
+profiling = []  # Enable performance profiling output
+
+[dependencies]
+makepad-widgets = { git = "https://github.com/makepad/makepad", branch = "rik" }
+urdf-rs = "0.9"
+glam = "0.29"
+stl_io = "0.7"

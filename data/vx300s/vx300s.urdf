@@ -1,0 +1,218 @@
+<?xml version="1.0"?>
+<robot name="vx300s">
+  <!-- Interbotix ViperX 300 6DOF Robot Arm -->
+  <!-- Converted from xacro for standalone use -->
+
+  <!-- Material definitions -->
+  <material name="dark_gray">
+    <color rgba="0.3 0.3 0.35 1.0"/>
+  </material>
+  <material name="blue">
+    <color rgba="0.2 0.4 0.8 1.0"/>
+  </material>
+  <material name="light_blue">
+    <color rgba="0.2 0.6 0.9 1.0"/>
+  </material>
+  <material name="yellow">
+    <color rgba="1.0 0.9 0.2 1.0"/>
+  </material>
+  <material name="black">
+    <color rgba="0.15 0.15 0.15 1.0"/>
+  </material>
+  <material name="orange">
+    <color rgba="0.9 0.6 0.2 1.0"/>
+  </material>
+  <material name="red">
+    <color rgba="0.8 0.3 0.3 1.0"/>
+  </material>
+  <material name="silver">
+    <color rgba="0.7 0.7 0.7 1.0"/>
+  </material>
+  <material name="gray">
+    <color rgba="0.6 0.6 0.65 1.0"/>
+  </material>
+
+  <link name="base_link">
+    <visual>
+      <origin rpy="0 0 1.5707963" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="vx300s_1_base.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="dark_gray"/>
+    </visual>
+  </link>
+
+  <joint name="waist" type="revolute">
+    <axis xyz="0 0 1"/>
+    <limit effort="10" lower="-3.14158" upper="3.14158" velocity="3.14159"/>
+    <origin rpy="0 0 0" xyz="0 0 0.079"/>
+    <parent link="base_link"/>
+    <child link="shoulder_link"/>
+  </joint>
+
+  <link name="shoulder_link">
+    <visual>
+      <origin rpy="0 0 1.5707963" xyz="0 0 -0.003"/>
+      <geometry>
+        <mesh filename="vx300s_2_shoulder.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+  </link>
+
+  <joint name="shoulder" type="revolute">
+    <axis xyz="0 1 0"/>
+    <limit effort="20" lower="-1.85005" upper="1.25664" velocity="3.14159"/>
+    <origin rpy="0 0 0" xyz="0 0 0.04805"/>
+    <parent link="shoulder_link"/>
+    <child link="upper_arm_link"/>
+  </joint>
+
+  <link name="upper_arm_link">
+    <visual>
+      <origin rpy="0 0 1.5707963" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="vx300s_3_upper_arm.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="light_blue"/>
+    </visual>
+  </link>
+
+  <joint name="elbow" type="revolute">
+    <axis xyz="0 1 0"/>
+    <limit effort="15" lower="-1.76278" upper="1.60570" velocity="3.14159"/>
+    <origin rpy="0 0 0" xyz="0.05955 0 0.3"/>
+    <parent link="upper_arm_link"/>
+    <child link="upper_forearm_link"/>
+  </joint>
+
+  <link name="upper_forearm_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="vx300s_4_upper_forearm.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="yellow"/>
+    </visual>
+  </link>
+
+  <joint name="forearm_roll" type="revolute">
+    <axis xyz="1 0 0"/>
+    <limit effort="2" lower="-3.14158" upper="3.14158" velocity="3.14159"/>
+    <origin rpy="0 0 0" xyz="0.2 0 0"/>
+    <parent link="upper_forearm_link"/>
+    <child link="lower_forearm_link"/>
+  </joint>
+
+  <link name="lower_forearm_link">
+    <visual>
+      <origin rpy="3.14159 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="vx300s_5_lower_forearm.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="black"/>
+    </visual>
+  </link>
+
+  <joint name="wrist_angle" type="revolute">
+    <axis xyz="0 1 0"/>
+    <limit effort="5" lower="-1.86750" upper="2.23402" velocity="3.14159"/>
+    <origin rpy="0 0 0" xyz="0.1 0 0"/>
+    <parent link="lower_forearm_link"/>
+    <child link="wrist_link"/>
+  </joint>
+
+  <link name="wrist_link">
+    <visual>
+      <origin rpy="0 0 1.5707963" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="vx300s_6_wrist.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="orange"/>
+    </visual>
+  </link>
+
+  <joint name="wrist_rotate" type="revolute">
+    <axis xyz="1 0 0"/>
+    <limit effort="1" lower="-3.14158" upper="3.14158" velocity="3.14159"/>
+    <origin rpy="0 0 0" xyz="0.069744 0 0"/>
+    <parent link="wrist_link"/>
+    <child link="gripper_link"/>
+  </joint>
+
+  <link name="gripper_link">
+    <visual>
+      <origin rpy="0 0 1.5707963" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="vx300s_7_gripper.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="red"/>
+    </visual>
+  </link>
+
+  <!-- Gripper bar (fixed) -->
+  <joint name="gripper_bar" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="gripper_link"/>
+    <child link="gripper_bar_link"/>
+  </joint>
+
+  <link name="gripper_bar_link">
+    <visual>
+      <origin rpy="0 0 1.5707963" xyz="-0.063 0 0"/>
+      <geometry>
+        <mesh filename="vx300s_9_gripper_bar.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="silver"/>
+    </visual>
+  </link>
+
+  <!-- Fingers base -->
+  <joint name="ee_bar" type="fixed">
+    <origin rpy="0 0 0" xyz="0.025875 0 0"/>
+    <parent link="gripper_bar_link"/>
+    <child link="fingers_link"/>
+  </joint>
+
+  <link name="fingers_link"/>
+
+  <!-- Left finger -->
+  <joint name="left_finger" type="prismatic">
+    <axis xyz="0 1 0"/>
+    <limit effort="5" lower="0.021" upper="0.057" velocity="1"/>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="fingers_link"/>
+    <child link="left_finger_link"/>
+  </joint>
+
+  <link name="left_finger_link">
+    <visual>
+      <origin rpy="1.5707963 -3.14159 1.5707963" xyz="-0.0404 -0.0575 0"/>
+      <geometry>
+        <mesh filename="vx300s_10_gripper_finger.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="gray"/>
+    </visual>
+  </link>
+
+  <!-- Right finger (mirrored) -->
+  <joint name="right_finger" type="prismatic">
+    <axis xyz="0 1 0"/>
+    <limit effort="5" lower="-0.057" upper="-0.021" velocity="1"/>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+    <parent link="fingers_link"/>
+    <child link="right_finger_link"/>
+    <mimic joint="left_finger" multiplier="-1" offset="0"/>
+  </joint>
+
+  <link name="right_finger_link">
+    <visual>
+      <origin rpy="-1.5707963 3.14159 -1.5707963" xyz="-0.0404 0.0575 0"/>
+      <geometry>
+        <mesh filename="vx300s_10_gripper_finger.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="gray"/>
+    </visual>
+  </link>
+
+</robot>
