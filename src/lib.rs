@@ -20,6 +20,7 @@ pub mod robot;
 pub mod camera;
 pub mod error;
 pub mod profiling;
+pub mod episode;
 
 pub fn live_design(cx: &mut Cx) {
     render::live_design(cx);

@@ -9,6 +9,7 @@ use crate::mesh::{DrawMesh, DrawGrid, DrawSkybox, MeshData};
 use crate::robot::{Robot, JointType, load_robot, ForwardKinematicsMethods};
 use crate::camera::CameraController;
 use crate::error::RobotError;
+use crate::episode::Episode;
 
 live_design! {
     use link::theme::*;
@@ -23,15 +24,10 @@ live_design! {
         width: Fill
         height: Fill
 
-        show_bg: true
+        show_bg: false  // Disable 3D skybox cube to avoid ghost geometry
         draw_bg: {
-            fn pixel(self) -> vec4 {
-                let y = self.pos.y;
-                let top_color = vec3(0.75, 0.75, 0.85);
-                let bottom_color = vec3(0.85, 0.88, 0.85);
-                let color = mix(top_color, bottom_color, y);
-                return vec4(color, 1.0);
-            }
+            top_color: #b8c8d8
+            bottom_color: #d0e0d0
         }
 
         draw_mesh: {
@@ -107,6 +103,15 @@ pub struct RobotView {
     #[rust] show_world_axes: bool,
     #[rust] world_axis_drawers: Vec<DrawMesh>,
     #[rust] world_axes_initialized: bool,
+
+    // Episode playback
+    #[rust] episode: Option<Episode>,
+    #[rust] episode_frame: usize,
+    #[rust] episode_playing: bool,
+    #[rust] episode_timer: Timer,
+
+    // Separate skybox initialization flag (don't re-init on robot reload)
+    #[rust] skybox_initialized: bool,
 }
 
 impl RobotView {
@@ -224,6 +229,74 @@ impl RobotView {
 
     pub fn is_world_axes_shown(&self) -> bool {
         self.show_world_axes
+    }
+
+    /// Load episode data from a parquet file
+    pub fn load_episode(&mut self, cx: &mut Cx, path: &str) {
+        match Episode::load(path) {
+            Ok(episode) => {
+                eprintln!("=== Loaded episode with {} frames from {}", episode.num_frames(), path);
+                self.episode = Some(episode);
+                self.episode_frame = 0;
+                self.episode_playing = true; // Auto-start playback
+                self.episode_timer = cx.start_interval(0.033); // ~30fps playback
+                // Apply first frame
+                self.apply_episode_frame(cx);
+            }
+            Err(e) => {
+                eprintln!("Failed to load episode: {}", e);
+            }
+        }
+    }
+
+    /// Toggle episode playback
+    pub fn toggle_episode(&mut self, cx: &mut Cx) -> bool {
+        if self.episode.is_none() {
+            return false;
+        }
+        self.episode_playing = !self.episode_playing;
+        if self.episode_playing {
+            self.episode_timer = cx.start_interval(0.033); // ~30fps playback
+        } else {
+            self.episode_timer = Timer::default();
+        }
+        self.episode_playing
+    }
+
+    /// Get episode info (current_frame, total_frames)
+    pub fn get_episode_info(&self) -> Option<(usize, usize)> {
+        self.episode.as_ref().map(|ep| (self.episode_frame, ep.num_frames()))
+    }
+
+    /// Check if episode is playing
+    pub fn is_episode_playing(&self) -> bool {
+        self.episode_playing
+    }
+
+    /// Apply joint angles from current episode frame
+    fn apply_episode_frame(&mut self, cx: &mut Cx) {
+        if let Some(ref episode) = self.episode {
+            if let Some(frame) = episode.get_frame(self.episode_frame) {
+                if let Some(ref mut robot) = self.robot {
+                    // Use unclamped setter to apply episode angles without URDF limit restrictions
+                    robot.set_joint_angles_unclamped(&frame.joint_angles);
+                    self.redraw(cx);
+                }
+            }
+        }
+    }
+
+    /// Advance to next episode frame (called by timer)
+    pub fn advance_episode_frame(&mut self, cx: &mut Cx) {
+        if let Some(ref episode) = self.episode {
+            if self.episode_frame < episode.num_frames() - 1 {
+                self.episode_frame += 1;
+            } else {
+                // Loop back to start
+                self.episode_frame = 0;
+            }
+            self.apply_episode_frame(cx);
+        }
     }
 
     /// Enable/disable camera smoothing
@@ -366,18 +439,20 @@ impl RobotView {
     }
 
     fn init_grid(&mut self, cx: &mut Cx) {
-        let grid_size = 50.0;
-        let mut grid = MeshData::ground_plane(grid_size, 0.0);
-        let rot_mat = glam::Mat4::from_rotation_x(std::f32::consts::FRAC_PI_2);
-        let rot_makepad = Mat4 { v: rot_mat.to_cols_array() };
-        grid.apply_transform(&rot_makepad);
+        eprintln!("=== Initializing grid ===");
+        let grid_size = 10.0;  // 10 meter grid
+        // ground_plane creates XZ plane at Y=0 with normal pointing up - exactly what we need
+        let grid = MeshData::ground_plane(grid_size, 0.0);
+        eprintln!("=== Grid mesh: {} vertices, bounds {:?} to {:?}",
+            grid.vertex_count(), grid.bounds_min, grid.bounds_max);
         self.grid_mesh = Some(grid.clone());
 
         let mut grid_draw = DrawMesh::new_for_link(cx, grid, &self.draw_mesh);
         grid_draw.init_link_geometry(cx);
-        grid_draw.color = vec4(0.3, 0.3, 0.3, 1.0);
+        grid_draw.color = vec4(0.5, 0.7, 0.5, 1.0);  // Light green
         grid_draw.draw_grid_lines = 1.0;
         self.grid_drawer = Some(grid_draw);
+        eprintln!("=== Grid drawer created ===");
     }
 
     fn init_world_axes(&mut self, cx: &mut Cx) {
@@ -400,6 +475,11 @@ impl RobotView {
 
 impl Widget for RobotView {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
+        // Check for episode playback timer
+        if self.episode_timer.is_event(event).is_some() && self.episode_playing {
+            self.advance_episode_frame(cx);
+        }
+
         // Check for async load completion on timer tick
         if self.load_poll_timer.is_event(event).is_some() && self.check_async_load(cx) {
             // Emit appropriate action based on result
@@ -473,16 +553,18 @@ impl Widget for RobotView {
         cx.begin_turtle(walk, self.layout);
         let avail_rect = cx.turtle().rect();
 
-        if self.show_bg {
-            self.draw_bg.camera_pitch = self.camera.camera.pitch as f32;
-            self.draw_bg.draw_abs(cx, avail_rect);
-        }
+        // Skybox disabled - don't initialize 3D cube geometry to avoid ghost geometry issues
+        // if !self.skybox_initialized {
+        //     self.skybox_initialized = true;
+        //     self.draw_bg.init_geometry(cx.cx);
+        //     eprintln!("=== Skybox Initialized ===");
+        // }
 
         if !self.initialized {
             self.initialized = true;
             self.specular_enabled = true;
             self.init_robot(cx.cx);
-            eprintln!("=== URDF Viewer Initialized ===");
+            eprintln!("=== Robot Viewer Initialized ===");
         }
 
         if !self.grid_initialized {
@@ -496,23 +578,80 @@ impl Widget for RobotView {
             self.init_world_axes(cx.cx);
         }
 
+        // Calculate View and Projection matrices
+        let view_mat = self.camera.camera.view_matrix();
+        let aspect_ratio = avail_rect.size.x / avail_rect.size.y;
+        let proj_mat = self.camera.camera.projection_matrix(aspect_ratio);
+        
+        let view_mat_mkp = Self::glam_to_makepad(view_mat);
+        let proj_mat_mkp = Self::glam_to_makepad(proj_mat);
+
+        // Viewport rect (x, y, width, height) for embedded rendering
+        let viewport_rect = vec4(
+            avail_rect.pos.x as f32,
+            avail_rect.pos.y as f32,
+            avail_rect.size.x as f32,
+            avail_rect.size.y as f32,
+        );
+        // Full window size - get from pass size
+        let pass_size = cx.current_pass_size();
+        let full_size = vec2(pass_size.x as f32, pass_size.y as f32);
+
+        // Common rendering variables
+        let base_rot = glam::Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+        let camera_pos = self.camera.position();
+        let specular_strength = if self.specular_enabled { 0.5 } else { 0.0 };
+        let draw_clip = vec4(
+            avail_rect.pos.x as f32,
+            avail_rect.pos.y as f32,
+            (avail_rect.pos.x + avail_rect.size.x) as f32,
+            (avail_rect.pos.y + avail_rect.size.y) as f32,
+        );
+        let window_size = vec2(
+            avail_rect.size.x as f32,
+            avail_rect.size.y as f32,
+        );
+
+        // Draw 3D skybox (gradient cube)
+        if self.show_bg {
+            self.draw_bg.set_view_matrix(&view_mat_mkp);
+            self.draw_bg.set_projection_matrix(&proj_mat_mkp);
+            self.draw_bg.set_draw_clip(draw_clip);
+            self.draw_bg.set_viewport_rect(viewport_rect);
+            self.draw_bg.set_full_size(full_size);
+            self.draw_bg.begin_many_instances(cx);
+            self.draw_bg.draw(cx);
+            self.draw_bg.end_many_instances(cx);
+        }
+
+        // Draw grid (always, not dependent on robot being loaded)
+        if let Some(ref mut grid_draw) = self.grid_drawer {
+            // Grid at Y=0, no additional rotation needed since ground_plane is already rotated in init_grid
+            let grid_model = Self::glam_to_makepad(glam::Mat4::IDENTITY);
+
+            grid_draw.set_transform(&grid_model);
+            grid_draw.set_view_matrix(&view_mat_mkp);
+            grid_draw.set_projection_matrix(&proj_mat_mkp);
+            grid_draw.set_draw_clip(draw_clip);
+            grid_draw.set_window_size(window_size);
+            grid_draw.set_viewport_rect(viewport_rect);
+            grid_draw.set_full_size(full_size);
+
+            grid_draw.begin_many_instances(cx);
+            grid_draw.draw(cx);
+            grid_draw.end_many_instances(cx);
+        }
+
         if let Some(ref mut robot) = self.robot {
             robot.update_forward_kinematics();
 
-            let camera_transform = self.camera.transform();
-            let camera_pos = self.camera.position();
-            let specular_strength = if self.specular_enabled { 0.5 } else { 0.0 };
-
-            let draw_clip = vec4(
-                avail_rect.pos.x as f32,
-                avail_rect.pos.y as f32,
-                (avail_rect.pos.x + avail_rect.size.x) as f32,
-                (avail_rect.pos.y + avail_rect.size.y) as f32,
-            );
-            let window_size = vec2(
-                (avail_rect.pos.x + avail_rect.size.x) as f32,
-                (avail_rect.pos.y + avail_rect.size.y) as f32,
-            );
+            // Debug: print once when robot is first drawn
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                eprintln!("=== Drawing robot: {} links, {} drawers", robot.links.len(), self.link_drawers.len());
+                eprintln!("=== Camera pos: {:?}", camera_pos);
+                eprintln!("=== Viewport: {:?}, Full size: {:?}", viewport_rect, full_size);
+            });
 
             let link_colors = [
                 vec4(0.3, 0.3, 0.35, 1.0),
@@ -534,14 +673,18 @@ impl Widget for RobotView {
                 if drawer_idx >= self.link_drawers.len() { break; }
 
                 let link_transform = robot.link_transforms[link_idx];
-                let combined = Self::glam_to_makepad(camera_transform * link_transform);
+                // Apply base rotation to convert URDF Z-up to rendering Y-up
+                let model_mat = Self::glam_to_makepad(base_rot * link_transform);
 
                 let drawer = &mut self.link_drawers[drawer_idx];
-                drawer.set_transform(&combined);
+                drawer.set_transform(&model_mat);
+                drawer.set_view_matrix(&view_mat_mkp);
+                drawer.set_projection_matrix(&proj_mat_mkp);
                 drawer.set_camera_position(camera_pos);
                 drawer.set_specular_strength(specular_strength);
                 drawer.set_draw_clip(draw_clip);
                 drawer.set_window_size(window_size);
+                drawer.set_viewport_rect(viewport_rect);
                 drawer.color = link.color.map(|c| vec4(c[0], c[1], c[2], c[3]))
                     .unwrap_or(link_colors[drawer_idx % link_colors.len()]);
 
@@ -552,17 +695,6 @@ impl Widget for RobotView {
                 drawer.begin_many_instances(cx);
                 drawer.draw(cx);
                 drawer.end_many_instances(cx);
-            }
-
-            // Draw grid
-            if let Some(ref mut grid_draw) = self.grid_drawer {
-                let grid_transform = Self::glam_to_makepad(camera_transform);
-                grid_draw.set_transform(&grid_transform);
-                grid_draw.set_draw_clip(draw_clip);
-                grid_draw.set_window_size(window_size);
-                grid_draw.begin_many_instances(cx);
-                grid_draw.draw(cx);
-                grid_draw.end_many_instances(cx);
             }
 
             // Draw world axes
@@ -579,12 +711,16 @@ impl Widget for RobotView {
                 ];
 
                 for (i, (rot, pos)) in axes_transforms.iter().enumerate() {
-                    let transform = camera_transform * glam::Mat4::from_rotation_translation(*rot, *pos);
-                    self.world_axis_drawers[i].set_transform(&Self::glam_to_makepad(transform));
+                    let model = glam::Mat4::from_rotation_translation(*rot, *pos);
+                    let model_mat = Self::glam_to_makepad(model);
+                    self.world_axis_drawers[i].set_transform(&model_mat);
+                    self.world_axis_drawers[i].set_view_matrix(&view_mat_mkp);
+                    self.world_axis_drawers[i].set_projection_matrix(&proj_mat_mkp);
                     self.world_axis_drawers[i].set_camera_position(camera_pos);
                     self.world_axis_drawers[i].set_specular_strength(0.0);
                     self.world_axis_drawers[i].set_draw_clip(draw_clip);
                     self.world_axis_drawers[i].set_window_size(window_size);
+                    self.world_axis_drawers[i].set_viewport_rect(viewport_rect);
                     self.world_axis_drawers[i].begin_many_instances(cx);
                     self.world_axis_drawers[i].draw(cx);
                     self.world_axis_drawers[i].end_many_instances(cx);
@@ -619,14 +755,19 @@ impl Widget for RobotView {
                         joint.origin_rpy.z, joint.origin_rpy.y, joint.origin_rpy.x);
                     let joint_transform = glam::Mat4::from_rotation_translation(
                         origin_rot * axis_rotation, joint.origin_xyz);
-                    let world_transform = camera_transform * parent_transform * joint_transform;
+                    let model = parent_transform * joint_transform;
+                    // Apply base rotation to convert URDF Z-up to rendering Y-up
+                    let model_mat = Self::glam_to_makepad(base_rot * model);
 
                     let drawer = &mut self.axis_drawers[joint_idx];
-                    drawer.set_transform(&Self::glam_to_makepad(world_transform));
+                    drawer.set_transform(&model_mat);
+                    drawer.set_view_matrix(&view_mat_mkp);
+                    drawer.set_projection_matrix(&proj_mat_mkp);
                     drawer.set_camera_position(camera_pos);
                     drawer.set_specular_strength(0.3);
                     drawer.set_draw_clip(draw_clip);
                     drawer.set_window_size(window_size);
+                    drawer.set_viewport_rect(viewport_rect);
                     drawer.color = axis_colors[joint_idx % axis_colors.len()];
 
                     drawer.begin_many_instances(cx);
@@ -707,6 +848,22 @@ impl RobotViewRef {
 
     pub fn is_world_axes_shown(&self) -> bool {
         self.borrow().map(|inner| inner.is_world_axes_shown()).unwrap_or(false)
+    }
+
+    pub fn load_episode(&self, cx: &mut Cx, path: &str) {
+        if let Some(mut inner) = self.borrow_mut() { inner.load_episode(cx, path); }
+    }
+
+    pub fn toggle_episode(&self, cx: &mut Cx) -> bool {
+        self.borrow_mut().map(|mut inner| inner.toggle_episode(cx)).unwrap_or(false)
+    }
+
+    pub fn get_episode_info(&self) -> Option<(usize, usize)> {
+        self.borrow().and_then(|inner| inner.get_episode_info())
+    }
+
+    pub fn is_episode_playing(&self) -> bool {
+        self.borrow().map(|inner| inner.is_episode_playing()).unwrap_or(false)
     }
 }
 

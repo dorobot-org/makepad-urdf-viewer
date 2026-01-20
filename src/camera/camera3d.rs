@@ -38,10 +38,10 @@ pub struct Camera3D {
 impl Default for Camera3D {
     fn default() -> Self {
         Self {
-            distance: 3.0,
+            distance: 1.5,  // Closer to see small robots
             yaw: 0.5,
             pitch: 0.3,
-            target: glam::DVec3::ZERO,
+            target: glam::DVec3::new(0.0, 0.15, 0.0),  // Look at robot center (slightly above ground)
             pan_x: 0.0,
             pan_y: 0.0,
             fov: std::f64::consts::FRAC_PI_4, // 45 degrees
@@ -50,7 +50,7 @@ impl Default for Camera3D {
             min_pitch: -std::f64::consts::FRAC_PI_2 + 0.1,
             max_pitch: std::f64::consts::FRAC_PI_2 - 0.1,
             smoothing: 0.0,
-            target_distance: 3.0,
+            target_distance: 1.5,
             target_yaw: 0.5,
             target_pitch: 0.3,
             target_pan_x: 0.0,
@@ -120,7 +120,7 @@ impl Camera3D {
     /// Zoom the camera (change distance from target)
     pub fn zoom(&mut self, factor: f64) {
         self.target_distance *= factor;
-        self.target_distance = self.target_distance.clamp(0.1, 15.0);
+        self.target_distance = self.target_distance.clamp(0.1, 30.0);
 
         if self.smoothing == 0.0 {
             self.distance = self.target_distance;
@@ -135,11 +135,12 @@ impl Camera3D {
 
     /// Reset camera to default view
     pub fn reset(&mut self) {
-        self.target_distance = 3.0;
+        self.target_distance = 1.5;
         self.target_yaw = 0.5;
         self.target_pitch = 0.3;
         self.target_pan_x = 0.0;
         self.target_pan_y = 0.0;
+        self.target = glam::DVec3::new(0.0, 0.15, 0.0);
 
         if self.smoothing == 0.0 {
             self.distance = self.target_distance;
@@ -361,7 +362,7 @@ mod tests {
     #[test]
     fn test_default_camera() {
         let cam = Camera3D::default();
-        assert_eq!(cam.distance, 3.0);
+        assert_eq!(cam.distance, 12.0);
         assert_eq!(cam.fov, std::f64::consts::FRAC_PI_4);
     }
 

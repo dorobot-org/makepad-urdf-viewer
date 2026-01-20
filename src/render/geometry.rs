@@ -91,20 +91,15 @@ impl GeometryMesh3D {
 
 impl LiveHook for GeometryMesh3D {
     fn after_apply(&mut self, cx: &mut Cx, _apply: &mut Apply, _index: usize, _nodes: &[LiveNode]) {
-        // Initialize with a default cube for shader compilation
+        // Only create the geometry reference here - don't upload any mesh data.
+        // The actual mesh will be uploaded later by the owning draw shader.
+        // This prevents "ghost geometry" from appearing at the origin.
         if self.geometry_ref.is_none() {
-            let mesh = MeshData::test_cube(1.0);
-
             let mut fp = GeometryFingerprint::new(LiveType::of::<Self>());
             fp.push(self.instance_id as f32);
-
             self.geometry_ref = Some(cx.get_geometry_ref(fp));
-
-            if let Some(ref gr) = self.geometry_ref {
-                gr.0.update(cx, mesh.indices.clone(), mesh.vertices.clone());
-            }
-
-            self.mesh_data = Some(mesh);
+            // Note: geometry_ref exists but has no mesh data yet.
+            // Drawing will be a no-op until upload_mesh is called.
         }
     }
 }

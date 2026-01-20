@@ -84,11 +84,20 @@ fn build_robot_from_urdf(urdf: &urdf_rs::Robot, assets_base: &str) -> LoadResult
                         }
                         link_meshes.push(mesh);
                     }
-                    Err(_) => {
+                    Err(e) => {
                         warnings.push(RobotWarning::MissingMesh {
                             link_name: link.name.clone(),
                             path: filename.clone(),
                         });
+                        eprintln!("Failed to load mesh {}: {}", filename, e);
+                        // Fallback to a small red cube for visibility
+                        let mut cube = MeshData::test_cube(0.05);
+                        cube.make_double_sided();
+                        link_meshes.push(cube);
+                        // Mark as red in the link color if not already set
+                        if robot_link.color.is_none() {
+                            robot_link.color = Some([1.0, 0.0, 0.0, 1.0]);
+                        }
                     }
                 }
             }
@@ -195,14 +204,19 @@ fn load_mesh_for_visual(
 
     let mut mesh = MeshData::from_stl(&mesh_path)?;
 
+    // Debug: print mesh bounds before scaling
+    eprintln!("=== Mesh {}: bounds before scale: {:?} to {:?}", filename, mesh.bounds_min, mesh.bounds_max);
+
     // Apply mesh scale if specified in URDF
     if let Some(s) = scale {
         let scale_x = s.0[0] as f32;
         let scale_y = s.0[1] as f32;
         let scale_z = s.0[2] as f32;
         let uniform_scale = (scale_x + scale_y + scale_z) / 3.0;
+        eprintln!("=== Applying scale: {} (from {:?})", uniform_scale, s);
         if (uniform_scale - 1.0).abs() > 0.001 {
             mesh.apply_scale(uniform_scale);
+            eprintln!("=== Mesh {}: bounds after scale: {:?} to {:?}", filename, mesh.bounds_min, mesh.bounds_max);
         }
     }
 

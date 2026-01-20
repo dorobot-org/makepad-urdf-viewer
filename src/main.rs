@@ -131,6 +131,14 @@ live_design! {
 
             <View> { width: 8 }
 
+            episode_btn = <Button> {
+                text: "Episode: OFF"
+                draw_text: { color: #888 }
+                visible: false
+            }
+
+            <View> { width: 8 }
+
             reset_btn = <Button> {
                 text: "Reset"
                 draw_text: { color: #fff }
@@ -219,7 +227,7 @@ live_design! {
     App = {{App}} {
         ui: <Window> {
             window: { title: "VX300s (ALOHA) Robot Viewer" }
-            show_bg: false  // RobotView handles background
+            show_bg: false  // Don't draw window background - let 3D content show
             body = <URDFViewer> {}
         }
     }
@@ -232,6 +240,8 @@ pub struct URDFViewer {
     #[rust] anim_timer: Timer,
     #[rust] anim_step: u64,
     #[rust] auto_started: bool,
+    #[rust] has_episode: bool,
+    #[rust] pending_episode_path: Option<String>,
 }
 
 impl URDFViewer {
@@ -239,7 +249,18 @@ impl URDFViewer {
         let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
         let selected = robot_view.get_selected_joint();
 
-        let text = if let Some((name, angle, lower, upper)) = robot_view.get_joint_info(selected) {
+        let text = if let Some((current_frame, total_frames)) = robot_view.get_episode_info() {
+            // Episode playback mode - show frame info
+            if let Some((name, angle, _, _)) = robot_view.get_joint_info(selected) {
+                format!(
+                    "Frame {}/{} | Joint {}: {} = {:.1}°",
+                    current_frame + 1, total_frames,
+                    selected, name, angle.to_degrees()
+                )
+            } else {
+                format!("Frame {}/{}", current_frame + 1, total_frames)
+            }
+        } else if let Some((name, angle, lower, upper)) = robot_view.get_joint_info(selected) {
             format!(
                 "Joint {}: {} = {:.2} rad ({:.1}°) [{:.1}° to {:.1}°]",
                 selected, name, angle, angle.to_degrees(),
@@ -254,7 +275,10 @@ impl URDFViewer {
 
 impl Widget for URDFViewer {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
-        self.view.handle_event(cx, event, scope);
+        // Capture all actions from a single handle_event call
+        let actions = cx.capture_actions(|cx| {
+            self.view.handle_event(cx, event, scope);
+        });
 
         // Animation timer - managed at URDFViewer level
         if self.anim_timer.is_event(event).is_some() && self.animating {
@@ -289,17 +313,21 @@ impl Widget for URDFViewer {
             self.update_status(cx);
         }
 
-        // Handle actions from RobotView
-        let actions = cx.capture_actions(|cx| {
-            self.view.handle_event(cx, event, scope);
-        });
-
         for action in &actions {
             match action.as_widget_action().cast::<RobotViewAction>() {
                 RobotViewAction::JointChanged { .. } => {
                     self.update_status(cx);
                 }
                 RobotViewAction::AnimationToggled(_) => {
+                    self.update_status(cx);
+                }
+                RobotViewAction::LoadingComplete => {
+                    // Robot finished loading - load pending episode if any
+                    if let Some(episode_path) = self.pending_episode_path.take() {
+                        let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
+                        robot_view.load_episode(cx, &episode_path);
+                        eprintln!("=== Episode loaded after robot ready");
+                    }
                     self.update_status(cx);
                 }
                 _ => {}
@@ -337,6 +365,15 @@ impl Widget for URDFViewer {
             self.view.button(id!(main_content.header.xyz_btn)).set_text(cx, text);
         }
 
+        // Episode playback toggle button
+        if self.view.button(id!(main_content.header.episode_btn)).clicked(&actions) {
+            let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
+            let playing = robot_view.toggle_episode(cx);
+            let text = if playing { "Episode: PAUSE" } else { "Episode: PLAY" };
+            self.view.button(id!(main_content.header.episode_btn)).set_text(cx, text);
+            self.update_status(cx);
+        }
+
         // Open robot selection modal
         if self.view.button(id!(main_content.header.open_btn)).clicked(&actions) {
             println!("Opening modal...");
@@ -348,6 +385,9 @@ impl Widget for URDFViewer {
         if self.view.button(id!(robot_modal.vx300s_btn)).clicked(&actions) {
             let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
             robot_view.reload_robot(cx, "data/vx300s/vx300s.urdf", "data/vx300s");
+            self.has_episode = false;
+            self.pending_episode_path = None;
+            self.view.button(id!(main_content.header.episode_btn)).set_visible(cx, false);
             self.view.label(id!(main_content.header.robot_name_label)).set_text(cx, "VX300s (ALOHA)");
             self.view.modal(id!(robot_modal)).close(cx);
             self.view.view(id!(main_content.viewport_container)).set_visible(cx, true);
@@ -356,8 +396,19 @@ impl Widget for URDFViewer {
 
         if self.view.button(id!(robot_modal.so100_btn)).clicked(&actions) {
             let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
-            robot_view.reload_robot(cx, "data/so100.urdf", "data/assets");
-            self.view.label(id!(main_content.header.robot_name_label)).set_text(cx, "SO100");
+            // URDF uses filename="assets/Base.stl", so assets_dir should be "data/so100"
+            robot_view.reload_robot(cx, "data/so100/so100.urdf", "data/so100");
+            // Store episode path to load after robot finishes loading
+            let episode_path = std::env::var("HOME").unwrap_or_default() + "/home/dorobot/dataset/aimee-6283/data/chunk-000/episode_000000.parquet";
+            self.pending_episode_path = Some(episode_path);
+            self.has_episode = true;
+            // Stop sine wave animation
+            self.animating = false;
+            self.anim_timer = Timer::default();
+            // Show and update episode button
+            self.view.button(id!(main_content.header.episode_btn)).set_visible(cx, true);
+            self.view.button(id!(main_content.header.episode_btn)).set_text(cx, "Episode: PAUSE");
+            self.view.label(id!(main_content.header.robot_name_label)).set_text(cx, "SO100 (Episode)");
             self.view.modal(id!(robot_modal)).close(cx);
             self.view.view(id!(main_content.viewport_container)).set_visible(cx, true);
             self.update_status(cx);
@@ -366,6 +417,9 @@ impl Widget for URDFViewer {
         if self.view.button(id!(robot_modal.lekiwi_btn)).clicked(&actions) {
             let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
             robot_view.reload_robot(cx, "data/lekiwi/LeKiwi.urdf", "data/lekiwi");
+            self.has_episode = false;
+            self.pending_episode_path = None;
+            self.view.button(id!(main_content.header.episode_btn)).set_visible(cx, false);
             self.view.label(id!(main_content.header.robot_name_label)).set_text(cx, "LeKiwi");
             self.view.modal(id!(robot_modal)).close(cx);
             self.view.view(id!(main_content.viewport_container)).set_visible(cx, true);
@@ -375,6 +429,9 @@ impl Widget for URDFViewer {
         if self.view.button(id!(robot_modal.icub_btn)).clicked(&actions) {
             let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
             robot_view.reload_robot(cx, "data/icub/model.urdf", "data/icub");
+            self.has_episode = false;
+            self.pending_episode_path = None;
+            self.view.button(id!(main_content.header.episode_btn)).set_visible(cx, false);
             self.view.label(id!(main_content.header.robot_name_label)).set_text(cx, "iCub");
             self.view.modal(id!(robot_modal)).close(cx);
             self.view.view(id!(main_content.viewport_container)).set_visible(cx, true);

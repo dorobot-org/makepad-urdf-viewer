@@ -106,6 +106,13 @@ impl RobotJoint {
             }
         }
     }
+
+    /// Set angle without clamping (for episode playback with real recorded data)
+    pub fn set_angle_unclamped(&mut self, angle: f32) {
+        if self.is_movable() {
+            self.angle = angle;
+        }
+    }
 }
 
 /// Robot structure with forward kinematics
@@ -187,6 +194,13 @@ impl Robot {
     pub fn set_joint_angles(&mut self, angles: &[f32]) {
         for (joint, &angle) in self.joints.iter_mut().zip(angles.iter()) {
             joint.set_angle(angle);
+        }
+    }
+
+    /// Set all joint angles without clamping (for episode playback)
+    pub fn set_joint_angles_unclamped(&mut self, angles: &[f32]) {
+        for (joint, &angle) in self.joints.iter_mut().zip(angles.iter()) {
+            joint.set_angle_unclamped(angle);
         }
     }
 

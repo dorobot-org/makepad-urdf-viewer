@@ -278,7 +278,7 @@ impl MeshData {
         mesh
     }
 
-    /// Create a simple test cube mesh
+    /// Create a simple test cube mesh (faces pointing outward, for external viewing)
     pub fn test_cube(size: f32) -> Self {
         let mut mesh = MeshData::default();
         let s = size / 2.0;
@@ -313,6 +313,57 @@ impl MeshData {
 
             // Triangle 2: v0, v2, v3
             for v in [v0, v2, v3] {
+                mesh.vertices.extend_from_slice(v);
+                mesh.vertices.push(face_idx as f32);
+                mesh.vertices.extend_from_slice(normal);
+                mesh.vertices.push(v[0]);
+                mesh.vertices.push(v[1]);
+            }
+        }
+
+        let num_vertices = mesh.vertices.len() / FLOATS_PER_VERTEX;
+        mesh.indices = (0..num_vertices as u32).collect();
+
+        mesh
+    }
+
+    /// Create a skybox cube mesh (faces pointing inward, for internal viewing)
+    pub fn skybox_cube(size: f32) -> Self {
+        let mut mesh = MeshData::default();
+        let s = size / 2.0;
+
+        // Same faces as test_cube but with reversed winding order (v0, v2, v1) and (v0, v3, v2)
+        // Normals point inward for proper lighting if needed
+        let faces = [
+            // Front face (z+) - viewed from inside
+            ([s, -s, s], [s, s, s], [-s, s, s], [-s, -s, s], [0.0, 0.0, -1.0]),
+            // Back face (z-)
+            ([-s, -s, -s], [-s, s, -s], [s, s, -s], [s, -s, -s], [0.0, 0.0, 1.0]),
+            // Top face (y+)
+            ([-s, s, -s], [-s, s, s], [s, s, s], [s, s, -s], [0.0, -1.0, 0.0]),
+            // Bottom face (y-)
+            ([-s, -s, s], [-s, -s, -s], [s, -s, -s], [s, -s, s], [0.0, 1.0, 0.0]),
+            // Right face (x+)
+            ([s, -s, s], [s, -s, -s], [s, s, -s], [s, s, s], [-1.0, 0.0, 0.0]),
+            // Left face (x-)
+            ([-s, -s, -s], [-s, -s, s], [-s, s, s], [-s, s, -s], [1.0, 0.0, 0.0]),
+        ];
+
+        mesh.bounds_min = [-s, -s, -s];
+        mesh.bounds_max = [s, s, s];
+
+        for (face_idx, (v0, v1, v2, v3, normal)) in faces.iter().enumerate() {
+            // Triangle 1: v0, v2, v1 (reversed winding)
+            for v in [v0, v2, v1] {
+                mesh.vertices.extend_from_slice(v);
+                mesh.vertices.push(face_idx as f32);
+                mesh.vertices.extend_from_slice(normal);
+                mesh.vertices.push(v[0]);
+                mesh.vertices.push(v[1]);
+            }
+
+            // Triangle 2: v0, v3, v2 (reversed winding)
+            for v in [v0, v3, v2] {
                 mesh.vertices.extend_from_slice(v);
                 mesh.vertices.push(face_idx as f32);
                 mesh.vertices.extend_from_slice(normal);
