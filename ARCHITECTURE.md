@@ -1110,166 +1110,190 @@ cargo test --features profiling
 
 ---
 
-## Skybox and Grid Implementation Issues (2025-01-19)
+## Skybox and Grid Implementation (2025-01-20)
 
-### Critical Issue: Skybox Rendering Disabled
+### Background Rendering
 
-**Status**: Skybox is commented out due to "white cube bug"
+#### Why 3D Skybox Cubes Don't Work
+
+**Problem**: Using a 3D cube for gradient backgrounds causes "ghost geometry" issues.
+
+The original approach:
+```rust
+// DrawSkybox: 100m cube with depth pushed to far plane
+let mesh = MeshData::skybox_cube(100.0);
+clip_pos.z = clip_pos.w * 0.9999;  // Push to far depth
+```
+
+**Failure Modes**:
+
+1. **Ghost Geometry from `after_apply`**: Makepad's `GeometryMesh3D::after_apply()` creates a default `test_cube(1.0)` during widget construction for shader compilation. This small cube persists at origin with default transforms.
+
+2. **Double Initialization**: If `init_geometry()` runs multiple times (e.g., on robot reload), multiple geometry instances accumulate. The "ghost" cube writes to depth buffer, occluding the robot.
+
+3. **Depth Buffer Conflicts**: The depth hack `z = 0.9999 * w` interacts badly with viewport correction for embedded widgets.
+
+**Symptoms**:
+- "White box edges" (Z-fighting between ghost and real skybox)
+- "Gray invisible cube blocking robot" (ghost cube's top face at Y ≈ 0.5-1.0m)
+
+#### Current Solution: Disabled
 
 ```rust
-// Draw skybox (disabled for now - causes white cube issue)
-// if self.show_bg {
-//     self.draw_bg.set_view_matrix(&view_mat_mkp);
-//     ...
+// live_design!
+show_bg: false  // Disable 3D skybox
+
+// draw_walk - skip initialization entirely
+// if !self.skybox_initialized {
+//     self.draw_bg.init_geometry(cx.cx);  // DON'T DO THIS
 // }
 ```
 
-**Root Cause**: The depth hack used in the skybox shader conflicts with embedded viewport rendering:
+#### Correct Approach: 2D Background (TODO)
+
+For gradient backgrounds, use a 2D full-screen quad with NO depth interaction:
 
 ```rust
-// Force Z to W so it renders at max depth (1.0)
-let mut final_pos = vec4(clip_pos.xy, clip_pos.w, clip_pos.w);
+// Option 1: Window-level background shader
+App = {{App}} {
+    ui: <Window> {
+        show_bg: true
+        draw_bg: {
+            fn pixel(self) -> vec4 {
+                let t = self.pos.y;
+                return mix(bottom_color, top_color, t);
+            }
+        }
+    }
+}
+
+// Option 2: Pass clear color (simplest)
+// Set via Makepad pass configuration
 ```
 
-This technique works for full-screen skyboxes but breaks with:
-1. Embedded viewports (viewport correction happens after depth hack)
-2. Depth buffer precision in non-fullscreen viewports
-3. The viewport transformation doesn't account for the modified Z value
-
-**Impact**: `DrawSkybox` struct exists but is completely unused dead code.
+**Key Principles**:
+- Background should NOT write to depth buffer
+- Background should NOT use 3D geometry
+- Initialize background ONCE, never on reload
 
 ---
 
-### Grid Implementation Issues
+### Grid Implementation
 
-#### 1. Coordinate System Confusion
+#### Architecture
 
-The grid shader uses misleading variable names:
+The grid uses `DrawMesh` with a special `draw_grid_lines` mode (not `DrawGrid`):
 
-```rust
-let x_norm = self.world_pos.x / self.grid_spacing + 0.5;
-let y_norm = self.world_pos.y / self.grid_spacing + 0.5;  // Should be z_norm
+```
+MeshData::ground_plane(10.0, 0.0)  →  XZ plane at Y=0, 10m × 10m
+         ↓
+    DrawMesh with draw_grid_lines = 1.0
+         ↓
+    Shader renders grid pattern via UV-based math
 ```
 
-This only works because the grid is rotated 90° around X:
+#### Grid Initialization
 
 ```rust
-let base_rot = glam::Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2);
-```
+fn init_grid(&mut self, cx: &mut Cx) {
+    let grid_size = 10.0;  // 10 meter grid
 
-After rotation, the original XZ plane becomes XY, but variable names don't reflect this.
+    // ground_plane creates XZ plane at Y=0 with normal pointing up (+Y)
+    // NO rotation needed - already in correct orientation for Y-up rendering
+    let grid = MeshData::ground_plane(grid_size, 0.0);
 
-#### 2. Axis Drawing is Backwards
-
-```rust
-// X axis (red)
-if abs(self.world_pos.y) < self.line_width * 5.0 {
-    return self.x_axis_color;
-}
-
-// Y axis (blue)
-if abs(self.world_pos.x) < self.line_width * 5.0 {
-    return self.z_axis_color;  // Note: named z_axis_color
+    let mut grid_draw = DrawMesh::new_for_link(cx, grid, &self.draw_mesh);
+    grid_draw.init_link_geometry(cx);
+    grid_draw.draw_grid_lines = 1.0;  // Enable grid line mode in shader
+    self.grid_drawer = Some(grid_draw);
 }
 ```
 
-After the base rotation:
-- First check uses `world_pos.y` for X axis (incorrect)
-- Second check uses `world_pos.x` for Z axis (incorrect)
-
-#### 3. DrawGrid Not Actually Used
-
-The `DrawGrid` type exists but rendering uses `DrawMesh` instead:
-
-```rust
-#[rust] grid_drawer: Option<DrawMesh>,  // Should be DrawGrid
-```
-
-This means the specialized grid shader in `DrawGrid` is never used.
-
-#### 4. Performance: Pixel Clipping Inefficiency
+#### Grid Shader Logic
 
 ```rust
 fn pixel(self) -> vec4 {
-    if self.screen_pos.x < self.draw_clip.x || self.screen_pos.x > self.draw_clip.z ||
-       self.screen_pos.y < self.draw_clip.y || self.screen_pos.y > self.draw_clip.w {
-        return vec4(0.0, 0.0, 0.0, 0.0);  // Still processes fragment!
+    if self.draw_grid_lines > 0.5 {
+        let grid_cells = 10.0;
+        let gx = self.uv.x * grid_cells;  // 0-10 across grid
+        let gy = self.uv.y * grid_cells;
+
+        // Distance from nearest grid line
+        let dx = abs(gx - floor(gx + 0.5));
+        let dy = abs(gy - floor(gy + 0.5));
+
+        // Draw line if within threshold (3% of cell width)
+        if dx < 0.03 || dy < 0.03 {
+            return vec4(0.4, 0.4, 0.45, 1.0);  // Gray lines
+        }
+
+        // Transparent background - let window show through
+        return vec4(0.0, 0.0, 0.0, 0.0);
     }
-```
-
-Should use `discard` to skip fragment processing entirely.
-
-#### 5. Code Duplication: Viewport Correction
-
-The same 15-line viewport correction block appears in all three shaders:
-
-```rust
-let win_w = max(self.full_size.x, 1.0);
-let win_h = max(self.full_size.y, 1.0);
-let center_x_px = vp_x + vp_w * 0.5;
-let center_y_px = vp_y + vp_h * 0.5;
-let offset_x = (center_x_px / win_w) * 2.0 - 1.0;
-let offset_y = 1.0 - (center_y_px / win_h) * 2.0;
-let scale_x = vp_w / win_w;
-let scale_y = vp_h / win_h;
-clip_pos.x = clip_pos.x * scale_x + clip_pos.w * offset_x;
-clip_pos.y = clip_pos.y * scale_y + clip_pos.w * offset_y;
-```
-
-This appears in `DrawGrid`, `DrawMesh`, and `DrawSkybox` vertex shaders.
-
----
-
-### Shader Matrix Reconstruction Overhead
-
-Every shader reconstructs matrices from individual Vec4 columns:
-
-```rust
-// 12 lines to reconstruct ONE matrix
-let m_col0 = self.transform_col0;
-let m_col1 = self.transform_col1;
-let m_col2 = self.transform_col2;
-let m_col3 = self.transform_col3;
-let model = mat4(
-    vec4(m_col0.x, m_col0.y, m_col0.z, m_col0.w),
-    vec4(m_col1.x, m_col1.y, m_col1.z, m_col1.w),
-    vec4(m_col2.x, m_col2.y, m_col2.z, m_col2.w),
-    vec4(m_col3.x, m_col3.y, m_col3.z, m_col3.w)
-);
-```
-
-And you need to do this for model, view, and projection matrices (36 lines total).
-
-**Suggestion**: Makepad should provide a helper function or built-in matrix reconstruction.
-
----
-
-### Recommended Fixes
-
-#### Priority 1: Fix Skybox White Cube Bug
-- Investigate depth buffer behavior with embedded viewports
-- Consider using fullscreen quad approach instead of cube
-- Or: disable depth writes for skybox (`gl_DepthMask(false)`)
-
-#### Priority 2: Fix Grid Coordinate Confusion
-- Rename `y_norm` to `z_norm` for clarity
-- Fix axis checks to use correct coordinates after rotation
-- Add comments explaining the coordinate transformation
-
-#### Priority 3: Use `discard` for Clipping
-```rust
-if (self.screen_pos.x < self.draw_clip.x || ...) {
-    discard;  // Skip fragment processing entirely
+    // ... normal mesh rendering
 }
 ```
 
-#### Priority 4: Extract Viewport Correction
-- Add to Makepad as built-in shader helper
-- Or create a macro/function in local shader code
+#### Key Points
 
-#### Priority 5: Consider Using DrawGrid
-- Change `grid_drawer: Option<DrawMesh>` to `Option<DrawGrid>`
-- Or remove `DrawGrid` if intentionally not used
+1. **Grid uses DrawMesh, not DrawGrid**: The `DrawGrid` shader exists but is unused. Grid rendering piggybacks on `DrawMesh` via the `draw_grid_lines` flag.
+
+2. **No rotation needed**: `ground_plane()` creates an XZ plane at Y=0, which is correct for Y-up rendering. Previous code incorrectly applied a 90° rotation.
+
+3. **Transparent background**: Grid shader returns `vec4(0,0,0,0)` for non-line pixels, allowing the window background to show through.
+
+4. **UV-based pattern**: Grid lines are calculated from UV coordinates, not world position. This means grid density is fixed regardless of grid size.
+
+---
+
+### Coordinate System
+
+```
+URDF (Z-up)          Rendering (Y-up)
+    Z                     Y
+    |                     |
+    |                     |
+    +--- Y                +--- Z
+   /                     /
+  X                     X
+
+Conversion: base_rot = Mat4::from_rotation_x(-π/2)
+- Rotates Z to Y
+- Rotates Y to -Z
+```
+
+The `base_rot` is applied to robot meshes but NOT to the grid (which is already in Y-up coords).
+
+---
+
+### Lifecycle Management
+
+**Critical**: Scene elements (grid, axes) must be initialized ONCE, not on every robot reload.
+
+```rust
+// Correct: Separate flags for scene vs robot
+#[rust] grid_initialized: bool,      // Scene element - init once
+#[rust] initialized: bool,            // Robot - reset on reload
+
+fn draw_walk(&mut self, ...) {
+    // Grid: only init if never initialized
+    if !self.grid_initialized {
+        self.grid_initialized = true;
+        self.init_grid(cx.cx);
+    }
+
+    // Robot: re-init on reload (initialized set to false by reload_robot)
+    if !self.initialized {
+        self.initialized = true;
+        self.init_robot(cx.cx);
+    }
+}
+
+pub fn reload_robot(&mut self, ...) {
+    self.initialized = false;  // Trigger robot reload
+    // Do NOT reset grid_initialized!
+}
+```
 
 ---
 
