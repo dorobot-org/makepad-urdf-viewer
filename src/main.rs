@@ -22,6 +22,17 @@ live_design! {
     // Import RobotView from library crate
     use makepad_urdf_player::robot_view::RobotView;
 
+    // Gradient background for viewport
+    DrawGradientBg = {{DrawGradientBg}} {
+        fn pixel(self) -> vec4 {
+            // Vertical gradient: bright blue at top, light blue at bottom
+            let top_color = vec4(0.19, 0.50, 0.88, 1.0);    // #3080e0
+            let bottom_color = vec4(0.63, 0.85, 1.0, 1.0);  // #a0d8ff
+            let t = self.pos.y;  // 0 at top, 1 at bottom
+            return mix(top_color, bottom_color, t);
+        }
+    }
+
     URDFViewer = {{URDFViewer}} {
         width: Fill
         height: Fill
@@ -43,7 +54,8 @@ live_design! {
             width: Fill
             height: Fill
             flow: Overlay
-            show_bg: false
+            show_bg: true
+            draw_bg: <DrawGradientBg> {}  // Bright blue gradient
             clip_x: true
             clip_y: true
 
@@ -231,6 +243,13 @@ live_design! {
             body = <URDFViewer> {}
         }
     }
+}
+
+// Simple gradient background shader
+#[derive(Live, LiveHook, LiveRegister)]
+#[repr(C)]
+pub struct DrawGradientBg {
+    #[deref] pub draw_super: DrawQuad,
 }
 
 #[derive(Live, LiveHook, Widget)]

@@ -250,8 +250,8 @@ live_design! {
                 let dx = abs(gx - floor(gx + 0.5));
                 let dy = abs(gy - floor(gy + 0.5));
 
-                // Use larger threshold (0.03 = 3% of cell width) for visible lines
-                if dx < 0.03 || dy < 0.03 {
+                // Thin grid lines (0.015 = 1.5% of cell width)
+                if dx < 0.015 || dy < 0.015 {
                     return vec4(0.4, 0.4, 0.45, 1.0);  // Gray grid lines
                 }
                 // Transparent background - let window background show through
