@@ -252,10 +252,10 @@ live_design! {
 
                 // Thin grid lines (0.015 = 1.5% of cell width)
                 if dx < 0.015 || dy < 0.015 {
-                    return vec4(0.4, 0.4, 0.45, 1.0);  // Gray grid lines
+                    return vec4(0.5, 0.5, 0.55, 1.0);  // Gray grid lines
                 }
-                // Transparent background - let window background show through
-                return vec4(0.0, 0.0, 0.0, 0.0);
+                // Solid light blue ground (opaque - transparent breaks Makepad rendering)
+                return vec4(0.63, 0.85, 1.0, 1.0);
             }
 
             // Specular lighting

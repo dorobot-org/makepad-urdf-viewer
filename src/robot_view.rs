@@ -24,10 +24,10 @@ live_design! {
         width: Fill
         height: Fill
 
-        show_bg: false  // Disabled - using viewport gradient background instead
+        show_bg: false  // Disable 3D skybox cube to avoid ghost geometry
         draw_bg: {
-            top_color: #3080e0
-            bottom_color: #a0d8ff
+            top_color: #b8c8d8
+            bottom_color: #d0e0d0
         }
 
         draw_mesh: {
@@ -553,12 +553,12 @@ impl Widget for RobotView {
         cx.begin_turtle(walk, self.layout);
         let avail_rect = cx.turtle().rect();
 
-        // Initialize skybox 3D cube geometry
-        if self.show_bg && !self.skybox_initialized {
-            self.skybox_initialized = true;
-            self.draw_bg.init_geometry(cx.cx);
-            eprintln!("=== Skybox Initialized ===");
-        }
+        // Skybox disabled - don't initialize 3D cube geometry to avoid ghost geometry issues
+        // if !self.skybox_initialized {
+        //     self.skybox_initialized = true;
+        //     self.draw_bg.init_geometry(cx.cx);
+        //     eprintln!("=== Skybox Initialized ===");
+        // }
 
         if !self.initialized {
             self.initialized = true;
