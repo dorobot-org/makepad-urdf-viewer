@@ -418,9 +418,7 @@ impl LiveHook for DrawGrid {
 
 impl DrawGrid {
     pub fn new_from_template(_cx: &mut Cx, template: &DrawGrid) -> Self {
-        let mut geom = GeometryMesh3D::new_empty();
-        // geom.mesh_data is None by default
-        
+        let geom = GeometryMesh3D::new_empty();
         let draw_vars = template.draw_vars.clone();
         
         DrawGrid {

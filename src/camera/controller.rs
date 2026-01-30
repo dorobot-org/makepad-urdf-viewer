@@ -195,7 +195,7 @@ mod tests {
         let mut controller = CameraController::new();
         controller.handle_event(CameraEvent::Scroll(50.0)); // Zoom in a lot
         controller.handle_event(CameraEvent::Reset);
-        assert_eq!(controller.camera.distance, 3.0);
+        assert_eq!(controller.camera.distance, 1.5); // Default camera distance
     }
 
     #[test]

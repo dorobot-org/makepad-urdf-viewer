@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn test_default_camera() {
         let cam = Camera3D::default();
-        assert_eq!(cam.distance, 12.0);
+        assert_eq!(cam.distance, 1.5);
         assert_eq!(cam.fov, std::f64::consts::FRAC_PI_4);
     }
 

@@ -8,6 +8,12 @@ use std::fs::File;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::{RowAccessor, ListAccessor};
 
+// Parquet column indices for LeRobot format
+// These are specific to the LeRobot dataset schema
+const OBSERVATION_STATE_COLUMN: usize = 1;
+const TIMESTAMP_COLUMN: usize = 2;
+const FRAME_INDEX_COLUMN: usize = 3;
+
 /// A single frame of episode data containing joint positions
 #[derive(Clone, Debug)]
 pub struct EpisodeFrame {
@@ -50,8 +56,8 @@ impl Episode {
             let row = row_result
                 .map_err(|e| EpisodeError::ParquetError(e.to_string()))?;
 
-            // Extract observation.state - expecting a list of 6 floats
-            let state_list = row.get_list(1) // observation.state is typically column 1
+            // Extract observation.state - expecting a list of joint angles
+            let state_list = row.get_list(OBSERVATION_STATE_COLUMN)
                 .map_err(|e| EpisodeError::ParseError(format!("Failed to get observation.state: {}", e)))?;
 
             let mut joint_angles_degrees = Vec::new();
@@ -77,12 +83,12 @@ impl Episode {
                 })
                 .collect();
 
-            // Get frame index (column 3 in schema)
-            let frame_index = row.get_long(3) // frame_index column
+            // Get frame index
+            let frame_index = row.get_long(FRAME_INDEX_COLUMN)
                 .unwrap_or(frames.len() as i64) as u64;
 
-            // Get timestamp if available (column 2 - it's a float, not double)
-            let timestamp = row.get_float(2).map(|f| f as f64).ok();
+            // Get timestamp if available
+            let timestamp = row.get_float(TIMESTAMP_COLUMN).map(|f| f as f64).ok();
 
             frames.push(EpisodeFrame {
                 joint_angles,
@@ -251,8 +257,6 @@ impl EpisodePlayer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_degrees_to_radians() {
         let deg = 180.0f32;

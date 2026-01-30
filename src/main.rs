@@ -182,12 +182,6 @@ live_design! {
                         text: "LeKiwi - Mobile Manipulator"
                         draw_text: { color: #ccc }
                     }
-
-                    icub_btn = <Button> {
-                        width: Fill
-                        text: "iCub - Humanoid Robot"
-                        draw_text: { color: #ccc }
-                    }
                 }
 
                 robot_info = <Label> {
@@ -339,7 +333,6 @@ impl Widget for URDFViewer {
 
         // Open robot selection modal
         if self.view.button(id!(main_content.header.open_btn)).clicked(&actions) {
-            println!("Opening modal...");
             self.view.view(id!(main_content.viewport_container)).set_visible(cx, false);
             self.view.modal(id!(robot_modal)).open(cx);
         }
@@ -372,15 +365,6 @@ impl Widget for URDFViewer {
             self.update_status(cx);
         }
 
-        if self.view.button(id!(robot_modal.icub_btn)).clicked(&actions) {
-            let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
-            robot_view.reload_robot(cx, "data/icub/model.urdf", "data/icub");
-            self.view.label(id!(main_content.header.robot_name_label)).set_text(cx, "iCub");
-            self.view.modal(id!(robot_modal)).close(cx);
-            self.view.view(id!(main_content.viewport_container)).set_visible(cx, true);
-            self.update_status(cx);
-        }
-
         // Cancel button in modal
         if self.view.button(id!(robot_modal.cancel_btn)).clicked(&actions) {
             self.view.modal(id!(robot_modal)).close(cx);
@@ -396,12 +380,11 @@ impl Widget for URDFViewer {
     }
 
     fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
-        // Auto-start animation for profiling (after first frame)
+        // Auto-start animation (after first frame)
         if !self.auto_started {
             self.auto_started = true;
             self.animating = true;
             self.anim_timer = cx.cx.start_interval(0.033);
-            eprintln!("=== Auto-starting animation for profiling ===");
         }
         self.view.draw_walk(cx, scope, walk)
     }

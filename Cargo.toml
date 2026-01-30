@@ -2,6 +2,13 @@
 name = "makepad-urdf-player"
 version = "0.1.0"
 edition = "2021"
+description = "A Makepad-based 3D URDF robot visualization tool with real-time joint control and animation"
+license = "MIT"
+authors = ["Yuechen"]
+repository = "https://github.com/user/makepad-urdf-viewer"
+keywords = ["robotics", "urdf", "3d", "visualization", "makepad"]
+categories = ["visualization", "simulation", "graphics"]
+rust-version = "1.75"
 
 [workspace]
 

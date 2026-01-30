@@ -109,9 +109,6 @@ pub struct RobotView {
     #[rust] episode_frame: usize,
     #[rust] episode_playing: bool,
     #[rust] episode_timer: Timer,
-
-    // Separate skybox initialization flag (don't re-init on robot reload)
-    #[rust] skybox_initialized: bool,
 }
 
 impl RobotView {
@@ -235,7 +232,6 @@ impl RobotView {
     pub fn load_episode(&mut self, cx: &mut Cx, path: &str) {
         match Episode::load(path) {
             Ok(episode) => {
-                eprintln!("=== Loaded episode with {} frames from {}", episode.num_frames(), path);
                 self.episode = Some(episode);
                 self.episode_frame = 0;
                 self.episode_playing = true; // Auto-start playback
@@ -243,8 +239,8 @@ impl RobotView {
                 // Apply first frame
                 self.apply_episode_frame(cx);
             }
-            Err(e) => {
-                eprintln!("Failed to load episode: {}", e);
+            Err(_e) => {
+                // Episode loading failed - silently ignore, episode playback won't be available
             }
         }
     }
@@ -319,8 +315,6 @@ impl RobotView {
             message: format!("Loading {}...", self.urdf_path)
         };
 
-        eprintln!("=== Starting async robot load: {}", self.urdf_path);
-
         // Start async loading
         self.start_async_load(cx);
     }
@@ -341,10 +335,10 @@ impl RobotView {
 
         // Spawn background thread
         std::thread::spawn(move || {
-            eprintln!("=== Background thread: Loading {}...", urdf_path);
             let result = load_robot(&urdf_path, &assets_dir);
-            let _ = sender.send(result);
-            eprintln!("=== Background thread: Loading complete");
+            if sender.send(result).is_err() {
+                eprintln!("Warning: Failed to send robot load result - receiver dropped");
+            }
         });
 
         // Start polling timer (check every 16ms ~60fps)
@@ -406,12 +400,10 @@ impl RobotView {
                 }
 
                 robot.update_forward_kinematics();
-                eprintln!("=== Created {} link drawers, {} axis drawers", self.link_drawers.len(), self.axis_drawers.len());
                 self.robot = Some(robot);
                 self.loading_state = LoadingState::Loaded;
             }
             Err(e) => {
-                eprintln!("Failed to load robot: {}", e);
                 self.loading_state = LoadingState::Error {
                     message: e.to_string()
                 };
@@ -439,12 +431,8 @@ impl RobotView {
     }
 
     fn init_grid(&mut self, cx: &mut Cx) {
-        eprintln!("=== Initializing grid ===");
         let grid_size = 10.0;  // 10 meter grid
-        // ground_plane creates XZ plane at Y=0 with normal pointing up - exactly what we need
         let grid = MeshData::ground_plane(grid_size, 0.0);
-        eprintln!("=== Grid mesh: {} vertices, bounds {:?} to {:?}",
-            grid.vertex_count(), grid.bounds_min, grid.bounds_max);
         self.grid_mesh = Some(grid.clone());
 
         let mut grid_draw = DrawMesh::new_for_link(cx, grid, &self.draw_mesh);
@@ -452,7 +440,6 @@ impl RobotView {
         grid_draw.color = vec4(0.5, 0.7, 0.5, 1.0);  // Light green
         grid_draw.draw_grid_lines = 1.0;
         self.grid_drawer = Some(grid_draw);
-        eprintln!("=== Grid drawer created ===");
     }
 
     fn init_world_axes(&mut self, cx: &mut Cx) {
@@ -553,18 +540,10 @@ impl Widget for RobotView {
         cx.begin_turtle(walk, self.layout);
         let avail_rect = cx.turtle().rect();
 
-        // Skybox disabled - don't initialize 3D cube geometry to avoid ghost geometry issues
-        // if !self.skybox_initialized {
-        //     self.skybox_initialized = true;
-        //     self.draw_bg.init_geometry(cx.cx);
-        //     eprintln!("=== Skybox Initialized ===");
-        // }
-
         if !self.initialized {
             self.initialized = true;
             self.specular_enabled = true;
             self.init_robot(cx.cx);
-            eprintln!("=== Robot Viewer Initialized ===");
         }
 
         if !self.grid_initialized {
@@ -644,14 +623,6 @@ impl Widget for RobotView {
 
         if let Some(ref mut robot) = self.robot {
             robot.update_forward_kinematics();
-
-            // Debug: print once when robot is first drawn
-            static ONCE: std::sync::Once = std::sync::Once::new();
-            ONCE.call_once(|| {
-                eprintln!("=== Drawing robot: {} links, {} drawers", robot.links.len(), self.link_drawers.len());
-                eprintln!("=== Camera pos: {:?}", camera_pos);
-                eprintln!("=== Viewport: {:?}, Full size: {:?}", viewport_rect, full_size);
-            });
 
             let link_colors = [
                 vec4(0.3, 0.3, 0.35, 1.0),
@@ -867,7 +838,13 @@ impl RobotViewRef {
     }
 }
 
+/// Remap a value from one range to another.
+/// Returns `to_min` if the input range has zero width to avoid division by zero.
 fn remap(value: f64, from_min: f64, from_max: f64, to_min: f64, to_max: f64) -> f64 {
-    let t = (value - from_min) / (from_max - from_min);
+    let range = from_max - from_min;
+    if range.abs() < 1e-10 {
+        return to_min;
+    }
+    let t = (value - from_min) / range;
     to_min + t * (to_max - to_min)
 }
