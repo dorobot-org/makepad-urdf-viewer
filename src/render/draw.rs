@@ -197,7 +197,13 @@ script_mod! {
             // camera_height / distance, so the plane and the dome fade into
             // the same near-white and the ground stops meeting the sky as a
             // hard saturated band.
-            let hz = clamp(1.0 - smoothstep(0.006, 0.060, cam_h / dist), 0.0, 1.0)
+            // cam_h/dist is sin(angle below the horizon), matching the dome.
+            // Floor the height at a couple of grid cells first: the camera can
+            // sit millimetres above the plane (the SO-100 framing puts it at
+            // 3.8 mm vs the telescope's 54 mm), and without the floor every
+            // fragment counts as grazing and the whole ground hazes to white.
+            let haze_h = max(cam_h, self.spacing * 1.5)
+            let hz = clamp(1.0 - smoothstep(0.006, 0.060, haze_h / dist), 0.0, 1.0)
             // premultiplied output for makepad's ONE / ONE_MINUS_SRC_ALPHA blend
             return vec4(
                 mix(1.000 * soil_a + 0.42 * line_a, 1.000 * alpha, hz),

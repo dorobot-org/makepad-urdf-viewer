@@ -94,6 +94,11 @@ fn z_up_to_y_up() -> glam::Mat4 {
     glam::Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2)
 }
 
+/// Default orbit angles. The pitch is POSITIVE (camera tilted up) so the
+/// horizon sits low in the frame and the ground stays under ~30% of the view.
+const DEFAULT_YAW: f32 = 0.72;
+const DEFAULT_PITCH: f32 = 0.16;
+
 const DEFAULT_LINK_COLOR: [f32; 4] = [0.62, 0.65, 0.70, 1.0];
 const SELECTED_TINT: [f32; 3] = [1.0, 0.75, 0.25];
 
@@ -133,8 +138,11 @@ pub struct RobotView {
     initialized: bool,
     #[rust]
     robot: Option<Robot>,
+    /// per link: index into `geometry_pool` (identical links share a slot)
     #[rust]
-    geometries: Vec<Option<Geometry>>,
+    geometries: Vec<Option<usize>>,
+    #[rust]
+    geometry_pool: Vec<Geometry>,
     #[rust]
     grid_geometry: Option<Geometry>,
     #[rust(0.05f32)]
@@ -199,8 +207,8 @@ impl RobotView {
             return;
         }
         self.initialized = true;
-        self.camera.orbit_yaw = 0.72;
-        self.camera.orbit_pitch = 0.16;
+        self.camera.orbit_yaw = DEFAULT_YAW;
+        self.camera.orbit_pitch = DEFAULT_PITCH;
         self.color_texture = Texture::new_with_format(
             cx,
             TextureFormat::RenderBGRAu8 {
@@ -270,7 +278,9 @@ impl RobotView {
         let Some(robot) = &mut self.robot else { return };
         for (k, &ji) in self.movable.iter().enumerate() {
             let Some(&angle) = angles.get(k) else { break };
-            robot.set_joint_angle(ji, angle);
+            // recorded data is replayed as recorded — clamping to the URDF
+            // limits here would silently rewrite the pose
+            robot.set_joint_angle_unclamped(ji, angle);
         }
         ForwardKinematics::update(robot);
         self.area.redraw(cx);
@@ -282,12 +292,24 @@ impl RobotView {
         }
         self.geometries_dirty = false;
         self.geometries.clear();
+        self.geometry_pool.clear();
         let Some(robot) = &self.robot else { return };
+        // The array repeats two meshes 32 times each; uploading one buffer per
+        // link cost ~55 MB of GPU vertex data for 3 distinct shapes. Links are
+        // mapped to a shared pool keyed by mesh content, so only the instance
+        // transform differs. (Geometry is not Clone — hence indices, not
+        // handles, in self.geometries.)
+        let mut by_hash: std::collections::HashMap<u64, usize> = Default::default();
         for link in &robot.links {
             let Some(mesh) = &link.mesh_data else {
                 self.geometries.push(None);
                 continue;
             };
+            let key = Self::mesh_key(mesh);
+            if let Some(&slot) = by_hash.get(&key) {
+                self.geometries.push(Some(slot));
+                continue;
+            }
             // MeshData: interleaved pos(3), id(1), normal(3), uv(2)
             // IcoVertex geometry: pos.xyzw, normal.xyzw
             let n_verts = mesh.vertices.len() / 9;
@@ -298,18 +320,46 @@ impl RobotView {
             }
             let geometry = Geometry::new(cx);
             geometry.update(cx, mesh.indices.clone(), vertices);
-            self.geometries.push(Some(geometry));
+            let slot = self.geometry_pool.len();
+            self.geometry_pool.push(geometry);
+            by_hash.insert(key, slot);
+            self.geometries.push(Some(slot));
         }
+    }
+
+    /// Content hash of a link mesh, used to share one GPU buffer between
+    /// identical links. Hashes the raw float bits, so it only collapses
+    /// meshes that are byte-for-byte the same shape.
+    fn mesh_key(mesh: &crate::mesh::MeshData) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        mesh.vertices.len().hash(&mut hasher);
+        mesh.indices.hash(&mut hasher);
+        for v in &mesh.vertices {
+            v.to_bits().hash(&mut hasher);
+        }
+        hasher.finish()
     }
 
     /// Frame the camera on a robot (Z-up URDF -> Y-up world: y' = z).
     fn frame_camera_on(&mut self, robot: &Robot) {
-        let (bmin, bmax) = robot.bounds();
+        // world-space: link-local boxes would frame translated models wrong
+        let (bmin, bmax) = robot.bounds_world();
         let center = (bmin + bmax) * 0.5;
         let radius = ((bmax - bmin).length() * 0.5).max(0.05);
-        // orbit pivots exactly on the body centre so rotation is in place
-        self.camera.desktop_target = vec3(center.x, center.z, -center.y);
-        self.camera.distance = (radius * 3.1).clamp(0.15, 40.0);
+        let distance = (radius * 3.1).clamp(0.15, 40.0);
+        // The camera sits at target - forward * distance, and forward tilts UP
+        // by DEFAULT_PITCH, so a low target drops the camera underneath the
+        // ground plane (the 4x8 array ended up 0.14 m below it, looking at the
+        // plate from beneath). Lift the orbit target just enough to keep the
+        // eye a little above the plane; small models are unaffected.
+        let plane_y = bmin.z - 0.002;
+        let eye_clearance = 0.15 * radius;
+        let min_target_y = plane_y + eye_clearance + DEFAULT_PITCH.sin() * distance;
+        // orbit pivots on the body centre (raised only if the eye needs it)
+        self.camera.desktop_target =
+            vec3(center.x, center.z.max(min_target_y), -center.y);
+        self.camera.distance = distance;
         self.pan_offset = vec2(0.0, 0.0);
         // grid scaled to the model: pick a round spacing near radius/3
         let steps = [0.01f32, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0];
@@ -326,7 +376,7 @@ impl RobotView {
         // own edge sits ~0.03 deg below eye level — i.e. on the horizon line
         self.grid_extent = 130.0;
         // sit the grid just below the model's lowest point (world y = urdf z)
-        self.grid_y = bmin.z - 0.002;
+        self.grid_y = plane_y;
     }
 
     fn ensure_grid_geometry(&mut self, cx: &mut Cx) -> GeometryId {
@@ -491,8 +541,8 @@ impl RobotView {
             self.robot = Some(robot);
         }
         self.animating = false;
-        self.camera.orbit_yaw = 0.72;
-        self.camera.orbit_pitch = 0.16;
+        self.camera.orbit_yaw = DEFAULT_YAW;
+        self.camera.orbit_pitch = DEFAULT_PITCH;
         self.pan_offset = vec2(0.0, 0.0);
         self.area.redraw(cx);
     }
@@ -511,7 +561,8 @@ impl RobotView {
         let selected_link = self.selected_link_index();
         if let Some(robot) = &self.robot {
             for (i, link) in robot.links.iter().enumerate() {
-                let Some(Some(geometry)) = self.geometries.get(i) else { continue };
+                let Some(Some(slot)) = self.geometries.get(i) else { continue };
+                let Some(geometry) = self.geometry_pool.get(*slot) else { continue };
                 let Some(transform) = robot.get_link_transform(i) else { continue };
                 let base = link.color.unwrap_or(DEFAULT_LINK_COLOR);
                 let color = if Some(i) == selected_link {
