@@ -1,29 +1,34 @@
-//! Makepad URDF Player
+//! Makepad URDF robot viewer library (makepad dev script system).
 //!
-//! A Makepad-based URDF robot viewer with embeddable RobotView widget.
+//! `RobotView` is an embeddable widget; register this crate's script module
+//! from your app's `AppMain::script_mod`:
 //!
-//! # Modules
-//!
-//! - `mesh`: 3D mesh data and STL loading (re-exports from render)
-//! - `render`: 3D rendering primitives (MeshData, DrawMesh, etc.)
-//! - `robot_view`: The main RobotView widget for displaying robots
-//! - `robot`: Robot data model, URDF loading, and forward kinematics
-//! - `camera`: 3D camera with orbital controls
-//! - `error`: Error types for robot loading and validation
+//! ```ignore
+//! fn script_mod(vm: &mut ScriptVm) -> ScriptValue {
+//!     makepad_widgets::script_mod(vm);
+//!     makepad_xr::script_mod(vm);
+//!     makepad_urdf_player::script_mod(vm);
+//!     self::script_mod(vm)
+//! }
+//! ```
+
+pub use makepad_widgets;
+pub use makepad_xr;
 
 use makepad_widgets::*;
 
-pub mod render;
-pub mod mesh;
-pub mod robot_view;
-pub mod robot;
-pub mod camera;
-pub mod error;
-pub mod profiling;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod episode;
+pub mod error;
+pub mod mesh;
+pub mod profiling;
+pub mod render;
+pub mod robot;
+pub mod robot_view;
 
-pub fn live_design(cx: &mut Cx) {
-    render::live_design(cx);
-    mesh::live_design(cx);
-    robot_view::live_design(cx);
+/// Register this crate's shaders and widgets into the script VM.
+pub fn script_mod(vm: &mut ScriptVm) -> ScriptValue {
+    render::draw::script_mod(vm);
+    render::draw::composite_shader::script_mod(vm);
+    robot_view::script_mod(vm)
 }

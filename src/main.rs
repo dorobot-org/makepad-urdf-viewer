@@ -1,419 +1,211 @@
-//! Makepad URDF Player - 3D Robot Viewer
+//! Makepad URDF Viewer — desktop app shell.
 //!
-//! A Makepad-based URDF robot visualization application.
-//!
-//! Controls:
-//!   - Mouse drag: Orbit camera
-//!   - Scroll: Zoom
-//!   - Arrow keys: Control joints (Left/Right to select, Up/Down to adjust)
-//!   - A: Toggle animation
-//!   - R: Reset to default pose
+//! Header buttons switch robots (including the Redbank III telescope unit
+//! and 4x8 array); the viewport is the embeddable RobotView widget.
 
+pub use makepad_urdf_player;
+pub use makepad_widgets;
+pub use makepad_xr;
+
+use makepad_urdf_player::robot_view::RobotView;
 use makepad_widgets::*;
-
-// Import from the library crate
-use makepad_urdf_player::robot_view::{RobotViewAction, RobotViewWidgetExt};
-
-live_design! {
-    use link::theme::*;
-    use link::shaders::*;
-    use link::widgets::*;
-
-    // Import RobotView from library crate
-    use makepad_urdf_player::robot_view::RobotView;
-
-    URDFViewer = {{URDFViewer}} {
-        width: Fill
-        height: Fill
-        flow: Overlay  // Allow Modal to float over content
-
-        // Main content container - use Overlay so header draws on top
-        main_content = <View> {
-            width: Fill
-            height: Fill
-            flow: Overlay
-
-            // Viewport goes first (drawn first, behind header)
-            viewport_container = <View> {
-                width: Fill
-                height: Fill
-                margin: { top: 40 }  // Leave space for header
-
-        viewport = <View> {
-            width: Fill
-            height: Fill
-            flow: Overlay
-            show_bg: false
-            clip_x: true
-            clip_y: true
-
-            robot_view = <RobotView> {
-                width: Fill
-                height: Fill
-            }
-
-            // Status overlay positioned at bottom of viewport
-            status_overlay = <View> {
-                width: Fill
-                height: 36
-                margin: { left: 8, top: 0 }
-                align: { x: 0.0, y: 1.0 }
-                show_bg: true
-                draw_bg: { color: #2a2a3580 }
-
-                joint_label = <Label> {
-                    draw_text: {
-                        text_style: { font_size: 12.0 }
-                        color: #ccc
-                    }
-                    text: "Joint 0: 0.00 rad"
-                }
-            }
-        } // end viewport
-            } // end viewport_container
-
-            // Header goes second (drawn on top)
-            header = <View> {
-            width: Fill
-            height: 40
-            padding: 8
-            spacing: 16
-            flow: Right
-            align: { y: 0.5 }
-            show_bg: true
-            draw_bg: { color: #2a2a35 }
-
-            open_btn = <Button> {
-                text: "Open Robot..."
-                draw_text: { color: #fff }
-            }
-
-            <View> { width: 16 }
-
-            robot_name_label = <Label> {
-                draw_text: {
-                    text_style: { font_size: 14.0 }
-                    color: #4080c0
-                }
-                text: "VX300s (ALOHA)"
-            }
-
-            <View> { width: 16 }
-
-            <Label> {
-                draw_text: {
-                    text_style: { font_size: 12.0 }
-                    color: #888
-                }
-                text: "Arrows=joints, +/-=zoom, A=animate, R=reset"
-            }
-
-            <View> { width: Fill }
-
-            light_btn = <Button> {
-                text: "Light: ON"
-                draw_text: { color: #ff0 }
-            }
-
-            <View> { width: 8 }
-
-            axes_btn = <Button> {
-                text: "Axes: OFF"
-                draw_text: { color: #888 }
-            }
-
-            <View> { width: 8 }
-
-            xyz_btn = <Button> {
-                text: "XYZ: OFF"
-                draw_text: { color: #888 }
-            }
-
-            <View> { width: 8 }
-
-            reset_btn = <Button> {
-                text: "Reset"
-                draw_text: { color: #fff }
-            }
-        }
-        } // end main_content
-
-        // Robot selection modal (floats over main_content due to Overlay flow)
-        robot_modal = <Modal> {
-            content: <View> {
-                width: 400
-                height: 300
-                padding: 20
-                spacing: 16
-                flow: Down
-                show_bg: true
-                draw_bg: { color: #2a2a35 }
-
-                <Label> {
-                    draw_text: {
-                        text_style: { font_size: 18.0 }
-                        color: #fff
-                    }
-                    text: "Select Robot Model"
-                }
-
-                // Robot selection buttons
-                <View> {
-                    width: Fill
-                    height: Fit
-                    flow: Down
-                    spacing: 4
-
-                    vx300s_btn = <Button> {
-                        width: Fill
-                        text: "VX300s (ALOHA) - ViperX 300 6DOF"
-                        draw_text: { color: #fff }
-                        draw_bg: { color: #4080c0 }
-                    }
-
-                    so100_btn = <Button> {
-                        width: Fill
-                        text: "SO100 - SO-ARM100 Robot"
-                        draw_text: { color: #ccc }
-                    }
-
-                    lekiwi_btn = <Button> {
-                        width: Fill
-                        text: "LeKiwi - Mobile Manipulator"
-                        draw_text: { color: #ccc }
-                    }
-                }
-
-                robot_info = <Label> {
-                    width: Fill
-                    margin: { top: 12 }
-                    draw_text: {
-                        text_style: { font_size: 12.0 }
-                        color: #888
-                    }
-                    text: "Click a robot above to load it"
-                }
-
-                <View> { height: Fill }
-
-                <View> {
-                    width: Fill
-                    height: Fit
-                    flow: Right
-                    align: { x: 1.0 }
-
-                    cancel_btn = <Button> {
-                        text: "Cancel"
-                    }
-                }
-            }
-        }
-    }
-
-    App = {{App}} {
-        ui: <Window> {
-            window: { title: "VX300s (ALOHA) Robot Viewer" }
-            show_bg: false  // RobotView handles background
-            body = <URDFViewer> {}
-        }
-    }
-}
-
-#[derive(Live, LiveHook, Widget)]
-pub struct URDFViewer {
-    #[deref] view: View,
-    #[rust] animating: bool,
-    #[rust] anim_timer: Timer,
-    #[rust] anim_step: u64,
-    #[rust] auto_started: bool,
-}
-
-impl URDFViewer {
-    fn update_status(&mut self, cx: &mut Cx) {
-        let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
-        let selected = robot_view.get_selected_joint();
-
-        let text = if let Some((name, angle, lower, upper)) = robot_view.get_joint_info(selected) {
-            format!(
-                "Joint {}: {} = {:.2} rad ({:.1}°) [{:.1}° to {:.1}°]",
-                selected, name, angle, angle.to_degrees(),
-                lower.to_degrees(), upper.to_degrees()
-            )
-        } else {
-            "Loading robot...".to_string()
-        };
-        self.view.label(id!(main_content.viewport_container.viewport.status_overlay.joint_label)).set_text(cx, &text);
-    }
-}
-
-impl Widget for URDFViewer {
-    fn handle_event(&mut self, cx: &mut Cx, event: &Event, scope: &mut Scope) {
-        self.view.handle_event(cx, event, scope);
-
-        // Animation timer - managed at URDFViewer level
-        if self.anim_timer.is_event(event).is_some() && self.animating {
-            self.anim_step += 1;
-            let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
-            robot_view.animate_step(cx, self.anim_step);
-            self.update_status(cx);
-            self.redraw(cx);
-        }
-
-        // Handle keyboard at top level
-        if let Event::KeyDown(ke) = event {
-            let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
-            match ke.key_code {
-                KeyCode::ArrowUp | KeyCode::ArrowDown | KeyCode::ArrowLeft | KeyCode::ArrowRight => {
-                    // Forward to RobotView - it handles these internally
-                }
-                KeyCode::KeyA => {
-                    self.animating = !self.animating;
-                    if self.animating {
-                        self.anim_timer = cx.start_interval(0.033);
-                    } else {
-                        self.anim_timer = Timer::default();
-                    }
-                }
-                KeyCode::KeyR => {
-                    robot_view.reset_view(cx);
-                    self.update_status(cx);
-                }
-                _ => {}
-            }
-            self.update_status(cx);
-        }
-
-        // Handle actions from RobotView
-        let actions = cx.capture_actions(|cx| {
-            self.view.handle_event(cx, event, scope);
-        });
-
-        for action in &actions {
-            match action.as_widget_action().cast::<RobotViewAction>() {
-                RobotViewAction::JointChanged { .. } => {
-                    self.update_status(cx);
-                }
-                RobotViewAction::AnimationToggled(_) => {
-                    self.update_status(cx);
-                }
-                _ => {}
-            }
-        }
-
-        // Reset button
-        if self.view.button(id!(main_content.header.reset_btn)).clicked(&actions) {
-            let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
-            robot_view.reset_view(cx);
-            self.update_status(cx);
-        }
-
-        // Light toggle button
-        if self.view.button(id!(main_content.header.light_btn)).clicked(&actions) {
-            let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
-            let enabled = robot_view.toggle_specular(cx);
-            let text = if enabled { "Light: ON" } else { "Light: OFF" };
-            self.view.button(id!(main_content.header.light_btn)).set_text(cx, text);
-        }
-
-        // Joint axes toggle button
-        if self.view.button(id!(main_content.header.axes_btn)).clicked(&actions) {
-            let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
-            let enabled = robot_view.toggle_joint_axes(cx);
-            let text = if enabled { "Axes: ON" } else { "Axes: OFF" };
-            self.view.button(id!(main_content.header.axes_btn)).set_text(cx, text);
-        }
-
-        // World XYZ axes toggle button
-        if self.view.button(id!(main_content.header.xyz_btn)).clicked(&actions) {
-            let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
-            let enabled = robot_view.toggle_world_axes(cx);
-            let text = if enabled { "XYZ: ON" } else { "XYZ: OFF" };
-            self.view.button(id!(main_content.header.xyz_btn)).set_text(cx, text);
-        }
-
-        // Open robot selection modal
-        if self.view.button(id!(main_content.header.open_btn)).clicked(&actions) {
-            self.view.view(id!(main_content.viewport_container)).set_visible(cx, false);
-            self.view.modal(id!(robot_modal)).open(cx);
-        }
-
-        // Robot selection buttons in modal - click to load directly
-        if self.view.button(id!(robot_modal.vx300s_btn)).clicked(&actions) {
-            let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
-            robot_view.reload_robot(cx, "data/vx300s/vx300s.urdf", "data/vx300s");
-            self.view.label(id!(main_content.header.robot_name_label)).set_text(cx, "VX300s (ALOHA)");
-            self.view.modal(id!(robot_modal)).close(cx);
-            self.view.view(id!(main_content.viewport_container)).set_visible(cx, true);
-            self.update_status(cx);
-        }
-
-        if self.view.button(id!(robot_modal.so100_btn)).clicked(&actions) {
-            let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
-            robot_view.reload_robot(cx, "data/so100.urdf", "data/assets");
-            self.view.label(id!(main_content.header.robot_name_label)).set_text(cx, "SO100");
-            self.view.modal(id!(robot_modal)).close(cx);
-            self.view.view(id!(main_content.viewport_container)).set_visible(cx, true);
-            self.update_status(cx);
-        }
-
-        if self.view.button(id!(robot_modal.lekiwi_btn)).clicked(&actions) {
-            let robot_view = self.view.robot_view(id!(main_content.viewport_container.viewport.robot_view));
-            robot_view.reload_robot(cx, "data/lekiwi/LeKiwi.urdf", "data/lekiwi");
-            self.view.label(id!(main_content.header.robot_name_label)).set_text(cx, "LeKiwi");
-            self.view.modal(id!(robot_modal)).close(cx);
-            self.view.view(id!(main_content.viewport_container)).set_visible(cx, true);
-            self.update_status(cx);
-        }
-
-        // Cancel button in modal
-        if self.view.button(id!(robot_modal.cancel_btn)).clicked(&actions) {
-            self.view.modal(id!(robot_modal)).close(cx);
-            self.view.view(id!(main_content.viewport_container)).set_visible(cx, true);
-        }
-
-        // Load button removed - clicking robot buttons loads directly
-
-        // Modal dismissed (click outside or Escape)
-        if self.view.modal(id!(robot_modal)).dismissed(&actions) {
-            self.view.view(id!(main_content.viewport_container)).set_visible(cx, true);
-        }
-    }
-
-    fn draw_walk(&mut self, cx: &mut Cx2d, scope: &mut Scope, walk: Walk) -> DrawStep {
-        // Auto-start animation (after first frame)
-        if !self.auto_started {
-            self.auto_started = true;
-            self.animating = true;
-            self.anim_timer = cx.cx.start_interval(0.033);
-        }
-        self.view.draw_walk(cx, scope, walk)
-    }
-}
-
-#[derive(Live, LiveHook)]
-pub struct App {
-    #[live] ui: WidgetRef,
-}
-
-impl LiveRegister for App {
-    fn live_register(cx: &mut Cx) {
-        // Order matters: dependencies first!
-        makepad_widgets::live_design(cx);
-        makepad_urdf_player::live_design(cx);  // Register library's live_design
-    }
-}
-
-impl MatchEvent for App {}
-
-impl AppMain for App {
-    fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
-        self.match_event(cx, event);
-        self.ui.handle_event(cx, event, &mut Scope::empty());
-    }
-}
 
 app_main!(App);
 
-fn main() {
-    app_main();
+script_mod! {
+    use mod.prelude.widgets.*
+    use mod.widgets.*
+
+    load_all_resources() do #(App::script_component(vm)){
+        ui: Root{
+            main_window := Window{
+                window.inner_size: vec2(1280, 820)
+                body +: {
+                    app_view := SolidView{
+                        width: Fill
+                        height: Fill
+                        flow: Down
+                        draw_bg +: {color: #x0d1116}
+
+                        header := SolidView{
+                            width: Fill
+                            height: 46.0
+                            flow: Right
+                            align: Align{x: 0.0 y: 0.5}
+                            padding: Inset{left: 12.0 right: 12.0}
+                            spacing: 8.0
+                            draw_bg +: {color: #x171d24}
+
+                            title := H3{
+                                text: "URDF Viewer v5"
+                                draw_text +: {color: #xdfe7ee}
+                            }
+                            rb_unit_btn := Button{text: "Redbank III Unit"}
+                            rb_array_btn := Button{text: "Redbank 4x8 Array"}
+                            so100_btn := Button{text: "SO-100 Arm"}
+                            light_btn := Button{text: "Light: off"}
+                            hint := Label{
+                                text: "drag orbit · alt drag light · shift/right drag pan · wheel zoom · arrows joints · A anim · R reset · L light"
+                                draw_text +: {color: #x8391a0}
+                            }
+                        }
+
+                        viewport := mod.widgets.RobotView{}
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const ROBOTS: &[(&str, &str, &str)] = &[
+    ("rb_unit_btn", "data/redbank/redbank_unit.urdf", "data/redbank"),
+    ("rb_array_btn", "data/redbank/redbank_array.urdf", "data/redbank"),
+    ("so100_btn", "data/so100.urdf", "data"),
+];
+
+/// wasm resolves the same models from bytes embedded in the binary.
+#[cfg(target_arch = "wasm32")]
+const ROBOTS: &[(&str, &str, &str)] = &[
+    ("rb_unit_btn", "redbank_unit.urdf", "embedded"),
+    ("rb_array_btn", "redbank_array.urdf", "embedded"),
+    ("so100_btn", "so100.urdf", "embedded"),
+];
+
+#[cfg(target_arch = "wasm32")]
+fn register_embedded_assets() {
+    use makepad_urdf_player::robot::set_virtual_assets;
+    let mut m = std::collections::HashMap::new();
+    m.insert("redbank_unit.urdf",
+             include_bytes!("../data/redbank/redbank_unit.urdf").as_slice());
+    m.insert("redbank_array.urdf",
+             include_bytes!("../data/redbank/redbank_array.urdf").as_slice());
+    m.insert("tube_body.stl",
+             include_bytes!("../data/redbank/meshes/tube_body.stl").as_slice());
+    m.insert("tube_rear_cap.stl",
+             include_bytes!("../data/redbank/meshes/tube_rear_cap.stl").as_slice());
+    m.insert("array_frame.stl",
+             include_bytes!("../data/redbank/meshes/array_frame.stl").as_slice());
+    m.insert("lens.stl",
+             include_bytes!("../data/redbank/meshes/lens.stl").as_slice());
+    m.insert("so100.urdf",
+             include_bytes!("../data/so100.urdf").as_slice());
+    m.insert("Base.stl",
+             include_bytes!("../data/assets/Base.stl").as_slice());
+    m.insert("Base_Motor.stl",
+             include_bytes!("../data/assets/Base_Motor.stl").as_slice());
+    m.insert("Fixed_Jaw.stl",
+             include_bytes!("../data/assets/Fixed_Jaw.stl").as_slice());
+    m.insert("Fixed_Jaw_Motor.stl",
+             include_bytes!("../data/assets/Fixed_Jaw_Motor.stl").as_slice());
+    m.insert("Lower_Arm.stl",
+             include_bytes!("../data/assets/Lower_Arm.stl").as_slice());
+    m.insert("Lower_Arm_Motor.stl",
+             include_bytes!("../data/assets/Lower_Arm_Motor.stl").as_slice());
+    m.insert("Moving_Jaw.stl",
+             include_bytes!("../data/assets/Moving_Jaw.stl").as_slice());
+    m.insert("Rotation_Pitch.stl",
+             include_bytes!("../data/assets/Rotation_Pitch.stl").as_slice());
+    m.insert("Rotation_Pitch_Motor.stl",
+             include_bytes!("../data/assets/Rotation_Pitch_Motor.stl").as_slice());
+    m.insert("Upper_Arm.stl",
+             include_bytes!("../data/assets/Upper_Arm.stl").as_slice());
+    m.insert("Upper_Arm_Motor.stl",
+             include_bytes!("../data/assets/Upper_Arm_Motor.stl").as_slice());
+    m.insert("Wrist_Pitch_Roll.stl",
+             include_bytes!("../data/assets/Wrist_Pitch_Roll.stl").as_slice());
+    m.insert("Wrist_Pitch_Roll_Motor.stl",
+             include_bytes!("../data/assets/Wrist_Pitch_Roll_Motor.stl").as_slice());
+    set_virtual_assets(m);
+}
+
+#[derive(Script, ScriptHook)]
+pub struct App {
+    #[live]
+    ui: WidgetRef,
+    #[rust(false)]
+    light_label_on: bool,
+}
+
+impl App {
+    fn load_robot(&mut self, cx: &mut Cx, urdf: &str, assets: &str) {
+        let viewport = self.ui.widget(cx, ids!(viewport));
+        if let Some(mut robot_view) = viewport.borrow_mut::<RobotView>() {
+            robot_view.load_robot(urdf, assets);
+        }
+        viewport.redraw(cx);
+    }
+
+    /// Lamp on = the sun is drawn in the sky and lights the model. Moving it
+    /// is alt+drag, so orbit / pan / joint keys are unaffected either way.
+    fn toggle_light(&mut self, cx: &mut Cx) {
+        let viewport = self.ui.widget(cx, ids!(viewport));
+        if let Some(mut robot_view) = viewport.borrow_mut::<RobotView>() {
+            let on = !robot_view.is_light_on();
+            robot_view.set_light_on(cx, on);
+        }
+        self.sync_light_label(cx);
+        viewport.redraw(cx);
+    }
+
+    /// The widget also switches the lamp on by itself (alt+drag) — keep the
+    /// button label in step with it.
+    fn sync_light_label(&mut self, cx: &mut Cx) {
+        let viewport = self.ui.widget(cx, ids!(viewport));
+        let on = viewport
+            .borrow::<RobotView>()
+            .map(|v| v.is_light_on())
+            .unwrap_or(false);
+        if on != self.light_label_on {
+            self.light_label_on = on;
+            let label = if on { "Light: on" } else { "Light: off" };
+            self.ui.widget(cx, ids!(light_btn)).set_text(cx, label);
+        }
+    }
+}
+
+impl MatchEvent for App {
+    fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
+        let mut load: Option<(&str, &str)> = None;
+        for (btn, urdf, assets) in ROBOTS {
+            if self
+                .ui
+                .button(cx, &[LiveId::from_str(btn)])
+                .clicked(actions)
+            {
+                load = Some((urdf, assets));
+            }
+        }
+        if let Some((urdf, assets)) = load {
+            self.load_robot(cx, urdf, assets);
+        }
+        if self.ui.button(cx, ids!(light_btn)).clicked(actions) {
+            self.toggle_light(cx);
+        }
+    }
+}
+
+impl AppMain for App {
+    fn script_mod(vm: &mut ScriptVm) -> ScriptValue {
+        #[cfg(target_arch = "wasm32")]
+        register_embedded_assets();
+        crate::makepad_widgets::script_mod(vm);
+        crate::makepad_xr::script_mod(vm);
+        makepad_urdf_player::script_mod(vm);
+        self::script_mod(vm)
+    }
+
+    fn handle_event(&mut self, cx: &mut Cx, event: &Event) {
+        if let Event::KeyDown(ke) = event {
+            if ke.key_code == KeyCode::KeyL && !ke.is_repeat {
+                self.toggle_light(cx);
+            }
+        }
+        self.match_event(cx, event);
+        self.ui.handle_event(cx, event, &mut Scope::empty());
+        if let Event::MouseUp(_) = event {
+            self.sync_light_label(cx);
+        }
+    }
 }

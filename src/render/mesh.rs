@@ -2,7 +2,6 @@
 //!
 //! Provides mesh loading from STL files and primitive generation.
 
-use makepad_widgets::*;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -28,9 +27,17 @@ impl MeshData {
     pub fn from_stl<P: AsRef<Path>>(path: P) -> Result<Self, String> {
         let file = File::open(path.as_ref())
             .map_err(|e| format!("Failed to open STL file: {}", e))?;
-        let mut reader = BufReader::new(file);
+        Self::from_stl_reader(&mut BufReader::new(file))
+    }
 
-        let stl = stl_io::read_stl(&mut reader)
+    /// Load mesh from in-memory STL bytes (wasm asset path)
+    pub fn from_stl_bytes(bytes: &[u8]) -> Result<Self, String> {
+        Self::from_stl_reader(&mut std::io::Cursor::new(bytes))
+    }
+
+    /// Load mesh from any seekable reader of STL data
+    pub fn from_stl_reader<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Result<Self, String> {
+        let stl = stl_io::read_stl(reader)
             .map_err(|e| format!("Failed to parse STL: {}", e))?;
 
         let mut mesh = MeshData {
@@ -497,7 +504,7 @@ impl MeshData {
     }
 
     /// Apply a 4x4 transform matrix to all vertices
-    pub fn apply_transform(&mut self, m: &Mat4) {
+    pub fn apply_transform(&mut self, m: &[f32; 16]) {
         let num_vertices = self.vertices.len() / FLOATS_PER_VERTEX;
 
         self.bounds_min = [f32::MAX; 3];
@@ -511,9 +518,9 @@ impl MeshData {
             let py = self.vertices[base + 1];
             let pz = self.vertices[base + 2];
 
-            let new_x = m.v[0] * px + m.v[4] * py + m.v[8] * pz + m.v[12];
-            let new_y = m.v[1] * px + m.v[5] * py + m.v[9] * pz + m.v[13];
-            let new_z = m.v[2] * px + m.v[6] * py + m.v[10] * pz + m.v[14];
+            let new_x = m[0] * px + m[4] * py + m[8] * pz + m[12];
+            let new_y = m[1] * px + m[5] * py + m[9] * pz + m[13];
+            let new_z = m[2] * px + m[6] * py + m[10] * pz + m[14];
 
             self.vertices[base] = new_x;
             self.vertices[base + 1] = new_y;
@@ -531,9 +538,9 @@ impl MeshData {
             let ny = self.vertices[base + 5];
             let nz = self.vertices[base + 6];
 
-            let new_nx = m.v[0] * nx + m.v[4] * ny + m.v[8] * nz;
-            let new_ny = m.v[1] * nx + m.v[5] * ny + m.v[9] * nz;
-            let new_nz = m.v[2] * nx + m.v[6] * ny + m.v[10] * nz;
+            let new_nx = m[0] * nx + m[4] * ny + m[8] * nz;
+            let new_ny = m[1] * nx + m[5] * ny + m[9] * nz;
+            let new_nz = m[2] * nx + m[6] * ny + m[10] * nz;
 
             let len = (new_nx * new_nx + new_ny * new_ny + new_nz * new_nz).sqrt();
             if len > 0.0001 {

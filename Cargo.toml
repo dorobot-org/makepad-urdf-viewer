@@ -17,10 +17,21 @@ default = []
 profiling = []  # Enable performance profiling output
 
 [dependencies]
-makepad-widgets = { git = "https://github.com/makepad/makepad", branch = "rik" }
+makepad-widgets = { git = "https://github.com/makepad/makepad", branch = "dev" }
+makepad-xr = { git = "https://github.com/makepad/makepad", branch = "dev" }
 urdf-rs = "0.9"
 glam = "0.29"
 stl_io = "0.7"
+serde_json = "1"
+
+# episode playback (parquet) is native-only; wasm builds exclude it
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 parquet = "56"
 arrow = "56"
-serde_json = "1"
+
+# Upstream dev wasm is broken: web init indexes windows[id_zero] before any
+# window exists (panic_bounds_check in CxWindowPool). Local copy carries the
+# two-line fix; drop this patch when upstream merges it.
+[patch."https://github.com/makepad/makepad"]
+makepad-widgets = { path = "../makepad-dev-patched/widgets" }
+makepad-xr = { path = "../makepad-dev-patched/xr" }
