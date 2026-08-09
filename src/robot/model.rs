@@ -253,6 +253,48 @@ impl Robot {
         (min, max)
     }
 
+    /// World-space AABB: link meshes placed by the current FK transforms.
+    ///
+    /// `bounds()` unions link-LOCAL mesh boxes, which is only correct when
+    /// every link sits at the origin. Anything with translated joints (the
+    /// SO-100 arm, the 4x8 array) needs this one, or the camera frames and
+    /// orbits about a point that is not the model (measured 0.11 m off for
+    /// the SO-100).
+    pub fn bounds_world(&self) -> (glam::Vec3, glam::Vec3) {
+        let mut min = glam::Vec3::splat(f32::MAX);
+        let mut max = glam::Vec3::splat(f32::MIN);
+        let mut any = false;
+
+        for (i, link) in self.links.iter().enumerate() {
+            let Some(mesh) = &link.mesh_data else { continue };
+            let Some(transform) = self.get_link_transform(i) else { continue };
+            let lo = glam::Vec3::from(mesh.bounds_min);
+            let hi = glam::Vec3::from(mesh.bounds_max);
+            // all eight corners, so rotated links are covered too
+            for corner in 0..8 {
+                let local = glam::Vec3::new(
+                    if corner & 1 == 0 { lo.x } else { hi.x },
+                    if corner & 2 == 0 { lo.y } else { hi.y },
+                    if corner & 4 == 0 { lo.z } else { hi.z },
+                );
+                let world = transform.transform_point3(local);
+                min = min.min(world);
+                max = max.max(world);
+                any = true;
+            }
+        }
+
+        if any { (min, max) } else { self.bounds() }
+    }
+
+    /// Set a joint angle by index WITHOUT clamping to the URDF limits, for
+    /// replaying recorded data that may sit outside the nominal range.
+    pub fn set_joint_angle_unclamped(&mut self, idx: usize, angle: f32) {
+        if let Some(joint) = self.joints.get_mut(idx) {
+            joint.set_angle_unclamped(angle);
+        }
+    }
+
     /// Get extent (size) of the robot
     pub fn extent(&self) -> glam::Vec3 {
         let (min, max) = self.bounds();
