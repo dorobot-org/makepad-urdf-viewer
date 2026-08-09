@@ -6,6 +6,23 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::error::{RobotError, RobotWarning};
+
+/// In-memory assets (wasm builds embed URDFs + STLs; keyed by file basename).
+static VIRTUAL_ASSETS: std::sync::OnceLock<
+    std::collections::HashMap<&'static str, &'static [u8]>,
+> = std::sync::OnceLock::new();
+
+/// Register embedded assets; call once at startup before any load.
+pub fn set_virtual_assets(
+    map: std::collections::HashMap<&'static str, &'static [u8]>,
+) {
+    let _ = VIRTUAL_ASSETS.set(map);
+}
+
+fn virtual_asset<P: AsRef<Path>>(path: P) -> Option<&'static [u8]> {
+    let base = path.as_ref().file_name()?.to_str()?;
+    VIRTUAL_ASSETS.get()?.get(base).copied()
+}
 use crate::mesh::MeshData;
 use super::model::{Robot, RobotLink, RobotJoint, JointType};
 
@@ -24,6 +41,11 @@ pub fn load_robot<P: AsRef<Path>>(urdf_path: P, assets_base: &str) -> LoadResult
     let urdf_path = urdf_path.as_ref();
 
     // Read URDF file
+    if let Some(bytes) = virtual_asset(urdf_path) {
+        let content = std::str::from_utf8(bytes)
+            .map_err(|e| RobotError::UrdfParseError(e.to_string()))?;
+        return load_robot_from_string(content, assets_base);
+    }
     let urdf_content = std::fs::read_to_string(urdf_path)
         .map_err(|e| RobotError::UrdfReadError {
             path: urdf_path.to_path_buf(),
@@ -202,7 +224,10 @@ fn load_mesh_for_visual(
         fallback_path
     };
 
-    let mut mesh = MeshData::from_stl(&mesh_path)?;
+    let mut mesh = match virtual_asset(filename_only) {
+        Some(bytes) => MeshData::from_stl_bytes(bytes)?,
+        None => MeshData::from_stl(&mesh_path)?,
+    };
 
     // Debug: print mesh bounds before scaling
     eprintln!("=== Mesh {}: bounds before scale: {:?} to {:?}", filename, mesh.bounds_min, mesh.bounds_max);
@@ -238,9 +263,7 @@ fn load_mesh_for_visual(
         // glam intrinsic ZYX with (yaw, pitch, roll) gives the same result
         let vis_rot = glam::Quat::from_euler(glam::EulerRot::ZYX, vis_rpy.z, vis_rpy.y, vis_rpy.x);
         let vis_transform = glam::Mat4::from_rotation_translation(vis_rot, vis_xyz);
-        let cols = vis_transform.to_cols_array();
-        let makepad_transform = makepad_widgets::Mat4 { v: cols };
-        mesh.apply_transform(&makepad_transform);
+        mesh.apply_transform(&vis_transform.to_cols_array());
     }
 
     let bounds = (

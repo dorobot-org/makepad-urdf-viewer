@@ -1,0 +1,939 @@
+<?xml version="1.0"?>
+<!-- Redbank III 4x8 array: every unit has a live bayonet-twist joint (±35°) -->
+<robot name="redbank_iii_array">
+  <link name="plate">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/array_frame.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.22 0.23 0.25 1.0"/></material>
+    </visual>
+  </link>
+  <link name="body_0_0">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_0_0">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_0_0" type="revolute">
+    <parent link="plate"/><child link="body_0_0"/>
+    <origin xyz="-0.4193 -0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_0_0" type="fixed">
+    <parent link="body_0_0"/><child link="lens_0_0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_0_1">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_0_1">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_0_1" type="revolute">
+    <parent link="plate"/><child link="body_0_1"/>
+    <origin xyz="-0.2995 -0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_0_1" type="fixed">
+    <parent link="body_0_1"/><child link="lens_0_1"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_0_2">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_0_2">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_0_2" type="revolute">
+    <parent link="plate"/><child link="body_0_2"/>
+    <origin xyz="-0.1797 -0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_0_2" type="fixed">
+    <parent link="body_0_2"/><child link="lens_0_2"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_0_3">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_0_3">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_0_3" type="revolute">
+    <parent link="plate"/><child link="body_0_3"/>
+    <origin xyz="-0.0599 -0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_0_3" type="fixed">
+    <parent link="body_0_3"/><child link="lens_0_3"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_0_4">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_0_4">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_0_4" type="revolute">
+    <parent link="plate"/><child link="body_0_4"/>
+    <origin xyz="0.0599 -0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_0_4" type="fixed">
+    <parent link="body_0_4"/><child link="lens_0_4"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_0_5">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_0_5">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_0_5" type="revolute">
+    <parent link="plate"/><child link="body_0_5"/>
+    <origin xyz="0.1797 -0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_0_5" type="fixed">
+    <parent link="body_0_5"/><child link="lens_0_5"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_0_6">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_0_6">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_0_6" type="revolute">
+    <parent link="plate"/><child link="body_0_6"/>
+    <origin xyz="0.2995 -0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_0_6" type="fixed">
+    <parent link="body_0_6"/><child link="lens_0_6"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_0_7">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_0_7">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_0_7" type="revolute">
+    <parent link="plate"/><child link="body_0_7"/>
+    <origin xyz="0.4193 -0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_0_7" type="fixed">
+    <parent link="body_0_7"/><child link="lens_0_7"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_1_0">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_1_0">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_1_0" type="revolute">
+    <parent link="plate"/><child link="body_1_0"/>
+    <origin xyz="-0.4193 -0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_1_0" type="fixed">
+    <parent link="body_1_0"/><child link="lens_1_0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_1_1">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_1_1">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_1_1" type="revolute">
+    <parent link="plate"/><child link="body_1_1"/>
+    <origin xyz="-0.2995 -0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_1_1" type="fixed">
+    <parent link="body_1_1"/><child link="lens_1_1"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_1_2">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_1_2">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_1_2" type="revolute">
+    <parent link="plate"/><child link="body_1_2"/>
+    <origin xyz="-0.1797 -0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_1_2" type="fixed">
+    <parent link="body_1_2"/><child link="lens_1_2"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_1_3">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_1_3">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_1_3" type="revolute">
+    <parent link="plate"/><child link="body_1_3"/>
+    <origin xyz="-0.0599 -0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_1_3" type="fixed">
+    <parent link="body_1_3"/><child link="lens_1_3"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_1_4">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_1_4">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_1_4" type="revolute">
+    <parent link="plate"/><child link="body_1_4"/>
+    <origin xyz="0.0599 -0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_1_4" type="fixed">
+    <parent link="body_1_4"/><child link="lens_1_4"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_1_5">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_1_5">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_1_5" type="revolute">
+    <parent link="plate"/><child link="body_1_5"/>
+    <origin xyz="0.1797 -0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_1_5" type="fixed">
+    <parent link="body_1_5"/><child link="lens_1_5"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_1_6">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_1_6">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_1_6" type="revolute">
+    <parent link="plate"/><child link="body_1_6"/>
+    <origin xyz="0.2995 -0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_1_6" type="fixed">
+    <parent link="body_1_6"/><child link="lens_1_6"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_1_7">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_1_7">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_1_7" type="revolute">
+    <parent link="plate"/><child link="body_1_7"/>
+    <origin xyz="0.4193 -0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_1_7" type="fixed">
+    <parent link="body_1_7"/><child link="lens_1_7"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_2_0">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_2_0">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_2_0" type="revolute">
+    <parent link="plate"/><child link="body_2_0"/>
+    <origin xyz="-0.4193 0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_2_0" type="fixed">
+    <parent link="body_2_0"/><child link="lens_2_0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_2_1">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_2_1">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_2_1" type="revolute">
+    <parent link="plate"/><child link="body_2_1"/>
+    <origin xyz="-0.2995 0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_2_1" type="fixed">
+    <parent link="body_2_1"/><child link="lens_2_1"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_2_2">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_2_2">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_2_2" type="revolute">
+    <parent link="plate"/><child link="body_2_2"/>
+    <origin xyz="-0.1797 0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_2_2" type="fixed">
+    <parent link="body_2_2"/><child link="lens_2_2"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_2_3">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_2_3">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_2_3" type="revolute">
+    <parent link="plate"/><child link="body_2_3"/>
+    <origin xyz="-0.0599 0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_2_3" type="fixed">
+    <parent link="body_2_3"/><child link="lens_2_3"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_2_4">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_2_4">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_2_4" type="revolute">
+    <parent link="plate"/><child link="body_2_4"/>
+    <origin xyz="0.0599 0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_2_4" type="fixed">
+    <parent link="body_2_4"/><child link="lens_2_4"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_2_5">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_2_5">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_2_5" type="revolute">
+    <parent link="plate"/><child link="body_2_5"/>
+    <origin xyz="0.1797 0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_2_5" type="fixed">
+    <parent link="body_2_5"/><child link="lens_2_5"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_2_6">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_2_6">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_2_6" type="revolute">
+    <parent link="plate"/><child link="body_2_6"/>
+    <origin xyz="0.2995 0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_2_6" type="fixed">
+    <parent link="body_2_6"/><child link="lens_2_6"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_2_7">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_2_7">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_2_7" type="revolute">
+    <parent link="plate"/><child link="body_2_7"/>
+    <origin xyz="0.4193 0.0599 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_2_7" type="fixed">
+    <parent link="body_2_7"/><child link="lens_2_7"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_3_0">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_3_0">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_3_0" type="revolute">
+    <parent link="plate"/><child link="body_3_0"/>
+    <origin xyz="-0.4193 0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_3_0" type="fixed">
+    <parent link="body_3_0"/><child link="lens_3_0"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_3_1">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_3_1">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_3_1" type="revolute">
+    <parent link="plate"/><child link="body_3_1"/>
+    <origin xyz="-0.2995 0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_3_1" type="fixed">
+    <parent link="body_3_1"/><child link="lens_3_1"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_3_2">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_3_2">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_3_2" type="revolute">
+    <parent link="plate"/><child link="body_3_2"/>
+    <origin xyz="-0.1797 0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_3_2" type="fixed">
+    <parent link="body_3_2"/><child link="lens_3_2"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_3_3">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_3_3">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_3_3" type="revolute">
+    <parent link="plate"/><child link="body_3_3"/>
+    <origin xyz="-0.0599 0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_3_3" type="fixed">
+    <parent link="body_3_3"/><child link="lens_3_3"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_3_4">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_3_4">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_3_4" type="revolute">
+    <parent link="plate"/><child link="body_3_4"/>
+    <origin xyz="0.0599 0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_3_4" type="fixed">
+    <parent link="body_3_4"/><child link="lens_3_4"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_3_5">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_3_5">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_3_5" type="revolute">
+    <parent link="plate"/><child link="body_3_5"/>
+    <origin xyz="0.1797 0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_3_5" type="fixed">
+    <parent link="body_3_5"/><child link="lens_3_5"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_3_6">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_3_6">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_3_6" type="revolute">
+    <parent link="plate"/><child link="body_3_6"/>
+    <origin xyz="0.2995 0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_3_6" type="fixed">
+    <parent link="body_3_6"/><child link="lens_3_6"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+  <link name="body_3_7">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens_3_7">
+    <visual>
+      <origin xyz="0 0 0.045" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="twist_3_7" type="revolute">
+    <parent link="plate"/><child link="body_3_7"/>
+    <origin xyz="0.4193 0.1797 0.012" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="fix_3_7" type="fixed">
+    <parent link="body_3_7"/><child link="lens_3_7"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+</robot>

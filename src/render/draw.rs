@@ -1,799 +1,434 @@
-//! Draw shaders for 3D rendering
+//! Instanced lit mesh shader for robot links (makepad dev script system).
 //!
-//! Provides DrawMesh, DrawGrid, and DrawSkybox for rendering various 3D elements.
+//! Same pattern as makepad's examples/box3d DrawPhysMesh: non-instance data
+//! before #[deref], per-instance fields after.
 
 use makepad_widgets::*;
-use super::geometry::GeometryMesh3D;
-use super::mesh::MeshData;
 
-live_design! {
-    use link::shaders::*;
-    use crate::render::geometry::GeometryMesh3D;
+script_mod! {
+    use mod.prelude.widgets.*
+    use mod.widgets.*
+    use mod.math.*
+    use mod.shader.*
+    use mod.draw
+    use mod.geom
 
-    pub DrawGrid = {{DrawGrid}} {
-        geometry: <GeometryMesh3D> {}
+    mod.draw.DrawRobotMesh = mod.std.set_type_default() do #(DrawRobotMesh::script_shader(vm)){
+        alpha_blend: false
+        backface_culling: false
+        vertex_pos: vertex_position(vec4f)
+        fb0: fragment_output(0, vec4f)
+        draw_call: uniform_buffer(draw.DrawCallUniforms)
+        draw_pass: uniform_buffer(draw.DrawPassUniforms)
+        draw_list: uniform_buffer(draw.DrawListUniforms)
+        geom: vertex_buffer(geom.IcoVertex, geom.IcoGeom)
+        v_world_clip: varying(vec4f)
+        v_world: varying(vec3f)
+        v_normal: varying(vec3f)
 
-        varying line_color: vec4;
-        varying world_pos: vec3;
-        varying screen_pos: vec2;
-
-        fn vertex(self) -> vec4 {
-            // Reconstruct matrices
-            let m_col0 = self.transform_col0;
-            let m_col1 = self.transform_col1;
-            let m_col2 = self.transform_col2;
-            let m_col3 = self.transform_col3;
-            let model = mat4(
-                vec4(m_col0.x, m_col0.y, m_col0.z, m_col0.w),
-                vec4(m_col1.x, m_col1.y, m_col1.z, m_col1.w),
-                vec4(m_col2.x, m_col2.y, m_col2.z, m_col2.w),
-                vec4(m_col3.x, m_col3.y, m_col3.z, m_col3.w)
-            );
-
-            let v_col0 = self.view_col0;
-            let v_col1 = self.view_col1;
-            let v_col2 = self.view_col2;
-            let v_col3 = self.view_col3;
-            let view = mat4(
-                vec4(v_col0.x, v_col0.y, v_col0.z, v_col0.w),
-                vec4(v_col1.x, v_col1.y, v_col1.z, v_col1.w),
-                vec4(v_col2.x, v_col2.y, v_col2.z, v_col2.w),
-                vec4(v_col3.x, v_col3.y, v_col3.z, v_col3.w)
-            );
-
-            let p_col0 = self.proj_col0;
-            let p_col1 = self.proj_col1;
-            let p_col2 = self.proj_col2;
-            let p_col3 = self.proj_col3;
-            let proj = mat4(
-                vec4(p_col0.x, p_col0.y, p_col0.z, p_col0.w),
-                vec4(p_col1.x, p_col1.y, p_col1.z, p_col1.w),
-                vec4(p_col2.x, p_col2.y, p_col2.z, p_col2.w),
-                vec4(p_col3.x, p_col3.y, p_col3.z, p_col3.w)
-            );
-
-            let pos_in = vec4(self.geom_pos, 1.0);
-            let world_pos_4 = model * pos_in;
-            self.world_pos = world_pos_4.xyz;
-            
-            let view_pos = view * world_pos_4;
-            let clip_pos = proj * view_pos;
-
-            self.line_color = self.color;
-
-            // Calculate screen position for scissor clipping
-            let ndc = clip_pos.xyz / clip_pos.w;
-            let vp_x = self.viewport_rect.x;
-            let vp_y = self.viewport_rect.y;
-            let vp_w = self.viewport_rect.z;
-            let vp_h = self.viewport_rect.w;
-            
-            let pixel_x = vp_x + (ndc.x + 1.0) * 0.5 * vp_w;
-            let pixel_y = vp_y + (1.0 - ndc.y) * 0.5 * vp_h;
-            self.screen_pos = vec2(pixel_x, pixel_y);
-
-            // Apply Viewport Correction to clip_pos
-            let win_w = max(self.full_size.x, 1.0);
-            let win_h = max(self.full_size.y, 1.0);
-            
-            let center_x_px = vp_x + vp_w * 0.5;
-            let center_y_px = vp_y + vp_h * 0.5;
-            
-            let offset_x = (center_x_px / win_w) * 2.0 - 1.0;
-            let offset_y = 1.0 - (center_y_px / win_h) * 2.0;
-            
-            let scale_x = vp_w / win_w;
-            let scale_y = vp_h / win_h;
-            
-            clip_pos.x = clip_pos.x * scale_x + clip_pos.w * offset_x;
-            clip_pos.y = clip_pos.y * scale_y + clip_pos.w * offset_y;
-
-            return clip_pos;
+        active_camera_world_pos: fn() -> vec3f {
+            let camera_world = self.draw_pass.camera_inv * vec4(0.0, 0.0, 0.0, 1.0)
+            return vec3(
+                camera_world.x / max(camera_world.w, 0.00001),
+                camera_world.y / max(camera_world.w, 0.00001),
+                camera_world.z / max(camera_world.w, 0.00001)
+            )
         }
 
-        fn pixel(self) -> vec4 {
-            // Viewport clipping - discard pixels outside viewport
-            if self.screen_pos.x < self.draw_clip.x || self.screen_pos.x > self.draw_clip.z ||
-               self.screen_pos.y < self.draw_clip.y || self.screen_pos.y > self.draw_clip.w {
-                return vec4(0.0, 0.0, 0.0, 0.0);  // Transparent - discard
-            }
-
-            let bg_color = vec4(0.7, 0.9, 0.7, 1.0);
-
-            let x_norm = self.world_pos.x / self.grid_spacing + 0.5;
-            let y_norm = self.world_pos.y / self.grid_spacing + 0.5;
-            let x_frac = x_norm - floor(x_norm);
-            let y_frac = y_norm - floor(y_norm);
-            let x_dist = abs(x_frac - 0.5) * self.grid_spacing;
-            let y_dist = abs(y_frac - 0.5) * self.grid_spacing;
-
-            // X axis (red)
-            if abs(self.world_pos.y) < self.line_width * 5.0 {
-                return self.x_axis_color;
-            }
-
-            // Y axis (blue)
-            if abs(self.world_pos.x) < self.line_width * 5.0 {
-                return self.z_axis_color;
-            }
-
-            // Regular grid lines
-            if x_dist < self.line_width || y_dist < self.line_width {
-                return self.line_color;
-            }
-
-            return bg_color;
+        vertex: fn() {
+            let local_pos = vec3(
+                self.geom.pos.x * self.scale.x,
+                self.geom.pos.y * self.scale.y,
+                self.geom.pos.z * self.scale.z
+            )
+            let local_normal = normalize(vec3(
+                self.geom.normal.x / max(self.scale.x, 0.00001),
+                self.geom.normal.y / max(self.scale.y, 0.00001),
+                self.geom.normal.z / max(self.scale.z, 0.00001)
+            ))
+            let model_view = self.draw_list.view_transform * self.transform
+            let world = model_view * vec4(local_pos.x, local_pos.y, local_pos.z, 1.0)
+            let world_normal = normalize((model_view * vec4(local_normal.x, local_normal.y, local_normal.z, 0.0)).xyz)
+            self.v_world = world.xyz
+            self.v_normal = world_normal
+            self.v_world_clip = vec4(world.x, world.y, world.z, 1.0)
+            let view_pos = self.draw_pass.camera_view * world
+            self.vertex_pos = self.draw_pass.camera_projection * view_pos
         }
 
-        fn fragment(self) -> vec4 {
-            return self.pixel();
+        pixel: fn() {
+            let normal_in = normalize(self.v_normal)
+            let view_dir = normalize(self.active_camera_world_pos() - self.v_world)
+            // flip normals on backfaces so double-sided meshes shade correctly
+            let normal = normal_in * sign(dot(normal_in, view_dir))
+            // key = the draggable lamp (xyz direction, w = lamp switched on)
+            let key_dir = normalize(self.key_light.xyz)
+            let lamp = self.key_light.w
+            let fill_dir = normalize(vec3(0.58, 0.35, -0.62))
+
+            // hemisphere ambient matching the morning environment: bright
+            // warm-white sky above, warm brown bounce off the planet below
+            let sky = vec3(0.46, 0.45, 0.43)
+            let ground = vec3(0.40, 0.39, 0.30)
+            let hemi = mix(ground, sky, normal.y * 0.5 + 0.5)
+
+            // warm key + cool fill diffuse; the lamp lifts the key
+            let key = max(dot(normal, key_dir), 0.0)
+            let fill = max(dot(normal, fill_dir), 0.0)
+            let key_gain = 0.35 + 0.55 * lamp
+            let diffuse = self.color.xyz * (
+                hemi
+                + key * vec3(1.0, 0.95, 0.86) * key_gain
+                + fill * vec3(0.62, 0.64, 0.70) * 0.22
+            )
+
+            // blinn specular from both lights
+            let half_key = normalize(key_dir + view_dir)
+            let half_fill = normalize(fill_dir + view_dir)
+            let spec_gain = 0.80 + 0.60 * lamp
+            let spec = (pow(max(dot(normal, half_key), 0.0), 48.0) * 0.45
+                + pow(max(dot(normal, half_fill), 0.0), 24.0) * 0.12) * spec_gain
+
+            // cool rim to lift silhouettes off the dark background
+            let rim = pow(max(1.0 - max(dot(normal, view_dir), 0.0), 0.0), 3.0)
+
+            let color = diffuse
+                + vec3(1.0, 0.98, 0.95) * spec
+                + vec3(0.26, 0.23, 0.20) * rim
+            return vec4(color, self.color.w)
+        }
+
+        fragment: fn() {
+            self.fb0 = depth_clip(self.v_world_clip, self.pixel(), self.depth_clip)
         }
     }
 
-    pub DrawMesh = {{DrawMesh}} {
-        geometry: <GeometryMesh3D> {}
+    mod.draw.DrawGridPlane = mod.std.set_type_default() do #(DrawGridPlane::script_shader(vm)){
+        alpha_blend: true
+        depth_write: false
+        backface_culling: false
+        vertex_pos: vertex_position(vec4f)
+        fb0: fragment_output(0, vec4f)
+        draw_call: uniform_buffer(draw.DrawCallUniforms)
+        draw_pass: uniform_buffer(draw.DrawPassUniforms)
+        draw_list: uniform_buffer(draw.DrawListUniforms)
+        geom: vertex_buffer(geom.IcoVertex, geom.IcoGeom)
+        v_world: varying(vec3f)
+        v_world_clip: varying(vec4f)
 
-        varying lit_color: vec4;
-        varying world_pos: vec3;
-        varying world_normal: vec3;
-        varying uv: vec2;
-        varying screen_pos: vec2;
-
-        fn vertex(self) -> vec4 {
-            // Reconstruct matrices
-            let m_col0 = self.transform_col0;
-            let m_col1 = self.transform_col1;
-            let m_col2 = self.transform_col2;
-            let m_col3 = self.transform_col3;
-            let model = mat4(
-                vec4(m_col0.x, m_col0.y, m_col0.z, m_col0.w),
-                vec4(m_col1.x, m_col1.y, m_col1.z, m_col1.w),
-                vec4(m_col2.x, m_col2.y, m_col2.z, m_col2.w),
-                vec4(m_col3.x, m_col3.y, m_col3.z, m_col3.w)
-            );
-
-            let v_col0 = self.view_col0;
-            let v_col1 = self.view_col1;
-            let v_col2 = self.view_col2;
-            let v_col3 = self.view_col3;
-            let view = mat4(
-                vec4(v_col0.x, v_col0.y, v_col0.z, v_col0.w),
-                vec4(v_col1.x, v_col1.y, v_col1.z, v_col1.w),
-                vec4(v_col2.x, v_col2.y, v_col2.z, v_col2.w),
-                vec4(v_col3.x, v_col3.y, v_col3.z, v_col3.w)
-            );
-
-            let p_col0 = self.proj_col0;
-            let p_col1 = self.proj_col1;
-            let p_col2 = self.proj_col2;
-            let p_col3 = self.proj_col3;
-            let proj = mat4(
-                vec4(p_col0.x, p_col0.y, p_col0.z, p_col0.w),
-                vec4(p_col1.x, p_col1.y, p_col1.z, p_col1.w),
-                vec4(p_col2.x, p_col2.y, p_col2.z, p_col2.w),
-                vec4(p_col3.x, p_col3.y, p_col3.z, p_col3.w)
-            );
-
-            // Transform vertex
-            let pos_in = vec4(self.geom_pos, 1.0);
-            let world_pos_4 = model * pos_in;
-            self.world_pos = world_pos_4.xyz;
-
-            let view_pos = view * world_pos_4;
-            let clip_pos = proj * view_pos;
-
-            // Transform normal
-            let normal_in = vec4(self.geom_normal, 0.0);
-            let world_normal = model * normal_in;
-            self.world_normal = normalize(world_normal.xyz);
-            
-            self.uv = self.geom_uv;
-
-            // Lighting
-            let light_dir = normalize(vec3(0.3, 0.8, 0.5));
-            let n = self.world_normal;
-            let diff = max(0.0, dot(n, light_dir));
-            let ambient = 0.4;
-            let diffuse_brightness = ambient + diff * 0.6;
-
-            let bottom_blend = max(0.0, -n.y);
-            let base_color = mix(self.color.xyz, self.bottom_color.xyz, bottom_blend);
-
-            self.lit_color = vec4(base_color * diffuse_brightness, 1.0);
-
-            // Calculate screen position for scissor clipping
-            let ndc = clip_pos.xyz / clip_pos.w;
-            
-            // Viewport transform
-            let vp_x = self.viewport_rect.x;
-            let vp_y = self.viewport_rect.y;
-            let vp_w = self.viewport_rect.z;
-            let vp_h = self.viewport_rect.w;
-            
-            let pixel_x = vp_x + (ndc.x + 1.0) * 0.5 * vp_w;
-            let pixel_y = vp_y + (1.0 - ndc.y) * 0.5 * vp_h;
-            
-            self.screen_pos = vec2(pixel_x, pixel_y);
-
-            // Apply Viewport Correction to clip_pos
-            let win_w = max(self.full_size.x, 1.0);
-            let win_h = max(self.full_size.y, 1.0);
-            
-            let center_x_px = vp_x + vp_w * 0.5;
-            let center_y_px = vp_y + vp_h * 0.5;
-            
-            let offset_x = (center_x_px / win_w) * 2.0 - 1.0;
-            let offset_y = 1.0 - (center_y_px / win_h) * 2.0;
-            
-            let scale_x = vp_w / win_w;
-            let scale_y = vp_h / win_h;
-            
-            clip_pos.x = clip_pos.x * scale_x + clip_pos.w * offset_x;
-            clip_pos.y = clip_pos.y * scale_y + clip_pos.w * offset_y;
-
-            return clip_pos;
+        cam_world: fn() -> vec3f {
+            let cw = self.draw_pass.camera_inv * vec4(0.0, 0.0, 0.0, 1.0)
+            let iw = 1.0 / max(cw.w, 0.00001)
+            return vec3(cw.x * iw, cw.y * iw, cw.z * iw)
         }
 
-        fn pixel(self) -> vec4 {
-            // DISABLED viewport clipping for debugging
-            // if self.screen_pos.x < self.draw_clip.x || self.screen_pos.x > self.draw_clip.z ||
-            //    self.screen_pos.y < self.draw_clip.y || self.screen_pos.y > self.draw_clip.w {
-            //     return vec4(0.0, 0.0, 0.0, 0.0);  // Transparent - discard
-            // }
-
-            // Grid line rendering mode - only draw lines, transparent background
-            if self.draw_grid_lines > 0.5 {
-                let grid_cells = 10.0;
-                let gx = self.uv.x * grid_cells;
-                let gy = self.uv.y * grid_cells;
-
-                let dx = abs(gx - floor(gx + 0.5));
-                let dy = abs(gy - floor(gy + 0.5));
-
-                // Thin grid lines (0.015 = 1.5% of cell width)
-                if dx < 0.015 || dy < 0.015 {
-                    return vec4(0.5, 0.5, 0.55, 1.0);  // Gray grid lines
-                }
-                // Solid light blue ground (opaque - transparent breaks Makepad rendering)
-                return vec4(0.63, 0.85, 1.0, 1.0);
-            }
-
-            // Specular lighting
-            let light_dir = normalize(vec3(0.3, 0.8, 0.5));
-            let view_dir = normalize(self.camera_pos - self.world_pos);
-            let normal = normalize(self.world_normal);
-
-            // Blinn-Phong specular
-            let halfway = normalize(light_dir + view_dir);
-            let spec_angle = max(dot(normal, halfway), 0.0);
-            let specular = pow(spec_angle, self.shininess) * self.specular_strength;
-
-            let final_color = self.lit_color.xyz + vec3(specular, specular, specular);
-
-            return vec4(final_color, 1.0);
+        vertex: fn() {
+            let world = vec4(
+                self.geom.pos.x * self.extent,
+                self.plane_y,
+                self.geom.pos.z * self.extent,
+                1.0
+            )
+            self.v_world = world.xyz
+            self.v_world_clip = world
+            let view_pos = self.draw_pass.camera_view * world
+            self.vertex_pos = self.draw_pass.camera_projection * view_pos
         }
 
-        fn fragment(self) -> vec4 {
-            return self.pixel();
+        pixel: fn() {
+            // distance (world units) to the nearest minor / major grid line
+            let gx = abs(fract(self.v_world.x / self.spacing + 0.5) - 0.5) * self.spacing
+            let gz = abs(fract(self.v_world.z / self.spacing + 0.5) - 0.5) * self.spacing
+            let s5 = self.spacing * 5.0
+            let g5x = abs(fract(self.v_world.x / s5 + 0.5) - 0.5) * s5
+            let g5z = abs(fract(self.v_world.z / s5 + 0.5) - 0.5) * s5
+            // The plane runs to the horizon, so the lines have to be
+            // anti-aliased by hand — this dialect has no fwidth. Lines keep a
+            // CONSTANT WORLD WIDTH so they get thinner with distance; once one
+            // would fall under a pixel it is widened to exactly one pixel and
+            // its opacity scaled by how much it lost, so it reads as thinner
+            // and fainter rather than as a blurred band.
+            let cam = self.cam_world()
+            let to_frag = self.v_world - cam
+            let dist = max(length(to_frag), 0.0001)
+            let cam_h = max(abs(cam.y - self.plane_y), 0.001)
+            // a pixel's footprint on the plane is anisotropic: transverse to
+            // the view ray it is dist * px_scale, along the ray it is stretched
+            // by 1 / sin(grazing) = dist / camera_height
+            let px_t = max(dist * self.px_scale, 0.0000001)
+            let px_l = px_t * min(dist / cam_h, 200.0)
+            let horiz_len = max(length(vec2(to_frag.x, to_frag.z)), 0.00001)
+            let hx = abs(to_frag.x) / horiz_len
+            let hz2 = abs(to_frag.z) / horiz_len
+            // footprint measured across each axis family
+            let fx = hx * px_l + hz2 * px_t
+            let fz = hz2 * px_l + hx * px_t
+            let lw = self.spacing * 0.010
+            let lw5 = self.spacing * 0.022
+            let wx = max(lw, fx)
+            let wz = max(lw, fz)
+            let minor = max(
+                (1.0 - smoothstep(0.0, wx, gx)) * clamp(lw / wx, 0.0, 1.0),
+                (1.0 - smoothstep(0.0, wz, gz)) * clamp(lw / wz, 0.0, 1.0)
+            )
+            let wx5 = max(lw5, fx)
+            let wz5 = max(lw5, fz)
+            let major = max(
+                (1.0 - smoothstep(0.0, wx5, g5x)) * clamp(lw5 / wx5, 0.0, 1.0),
+                (1.0 - smoothstep(0.0, wz5, g5z)) * clamp(lw5 / wz5, 0.0, 1.0)
+            )
+            let r = length(vec2(self.v_world.x, self.v_world.z))
+            // only a whisper of a fade at the very rim of the quad, which sits
+            // far enough out that its edge lands inside the horizon line
+            let fade = 1.0 - smoothstep(self.extent * 0.75, self.extent * 0.98, r)
+            // No above-the-plane fade: the grid is drawn from both sides, so
+            // it still reads when the camera dips under the ground.
+            // Pale #FFFFC5 soil with darker lines punching through it — the
+            // ground is bright, so the grid reads as shadow, not glow.
+            // Scalar arithmetic only: multiplying a let-bound vec3 by a float
+            // returns garbage in this script-shader dialect (verified — the
+            // same expression written with a vec3 literal renders correctly).
+            let line_a = (minor * 0.55 + major * 0.85) * fade
+            let soil_a = 0.55 * fade * (1.0 - line_a)
+            let alpha = soil_a + line_a
+            // Same haze as the sky dome, applied to the COLOUR only (folding
+            // it into alpha instead let the term go out of range and swallowed
+            // the whole frame): sin(angle below the horizon) is
+            // camera_height / distance, so the plane and the dome fade into
+            // the same near-white and the ground stops meeting the sky as a
+            // hard saturated band.
+            let hz = clamp(1.0 - smoothstep(0.006, 0.060, cam_h / dist), 0.0, 1.0)
+            // premultiplied output for makepad's ONE / ONE_MINUS_SRC_ALPHA blend
+            return vec4(
+                mix(1.000 * soil_a + 0.42 * line_a, 1.000 * alpha, hz),
+                mix(1.000 * soil_a + 0.41 * line_a, 0.985 * alpha, hz),
+                mix(0.773 * soil_a + 0.24 * line_a, 0.985 * alpha, hz),
+                alpha
+            )
+        }
+
+        fragment: fn() {
+            self.fb0 = depth_clip(self.v_world_clip, self.pixel(), self.depth_clip)
         }
     }
 
-    // 3D skybox cube - renders a gradient based on view direction
-    pub DrawSkybox = {{DrawSkybox}} {
-        geometry: <GeometryMesh3D> {}
+}
 
-        varying world_pos: vec3;
-        varying screen_pos: vec2;
+// Environment + composite. The sky dome is evaluated per screen pixel from
+// the camera basis (no geometry, no depth interaction) and the scene texture
+// — rendered over an alpha-0 clear — is laid on top.
+//
+// sample_as_bgra returns the render texture already channel-ordered on
+// Metal, but R/B-reversed on WebGL (verified both ways against a rendered
+// warm grid line). Two shader variants, chosen at compile time — only the
+// `scene` line differs.
+pub mod composite_shader {
+    use super::*;
 
-        fn vertex(self) -> vec4 {
-            // Reconstruct view matrix (rotation only - we want skybox centered on camera)
-            let v_col0 = self.view_col0;
-            let v_col1 = self.view_col1;
-            let v_col2 = self.view_col2;
-            let v_col3 = self.view_col3;
+    #[cfg(not(target_arch = "wasm32"))]
+    script_mod! {
+        use mod.prelude.widgets.*
+        use mod.shader.*
+        use mod.draw
 
-            let p_col0 = self.proj_col0;
-            let p_col1 = self.proj_col1;
-            let p_col2 = self.proj_col2;
-            let p_col3 = self.proj_col3;
-            let proj = mat4(
-                vec4(p_col0.x, p_col0.y, p_col0.z, p_col0.w),
-                vec4(p_col1.x, p_col1.y, p_col1.z, p_col1.w),
-                vec4(p_col2.x, p_col2.y, p_col2.z, p_col2.w),
-                vec4(p_col3.x, p_col3.y, p_col3.z, p_col3.w)
-            );
+        mod.draw.DrawSceneComposite = mod.std.set_type_default() do #(DrawSceneComposite::script_shader(vm)){
+            ..mod.draw.DrawQuad
+            scene_texture: texture_2d(float)
 
-            // Store world position (direction from center) for gradient
-            self.world_pos = self.geom_pos;
-
-            // Transform: use only view rotation (remove translation for skybox)
-            // Replace column 3 with (0,0,0,1) to remove translation
-            let view_rot = mat4(
-                vec4(v_col0.x, v_col0.y, v_col0.z, 0.0),
-                vec4(v_col1.x, v_col1.y, v_col1.z, 0.0),
-                vec4(v_col2.x, v_col2.y, v_col2.z, 0.0),
-                vec4(0.0, 0.0, 0.0, 1.0)
-            );
-
-            let pos_in = vec4(self.geom_pos, 1.0);
-            let view_pos = view_rot * pos_in;
-            let clip_pos = proj * view_pos;
-
-            // Calculate screen position for clipping
-            let ndc = clip_pos.xyz / clip_pos.w;
-            let vp_x = self.viewport_rect.x;
-            let vp_y = self.viewport_rect.y;
-            let vp_w = self.viewport_rect.z;
-            let vp_h = self.viewport_rect.w;
-
-            let pixel_x = vp_x + (ndc.x + 1.0) * 0.5 * vp_w;
-            let pixel_y = vp_y + (1.0 - ndc.y) * 0.5 * vp_h;
-            self.screen_pos = vec2(pixel_x, pixel_y);
-
-            // Apply Viewport Correction
-            let win_w = max(self.full_size.x, 1.0);
-            let win_h = max(self.full_size.y, 1.0);
-
-            let center_x_px = vp_x + vp_w * 0.5;
-            let center_y_px = vp_y + vp_h * 0.5;
-
-            let offset_x = (center_x_px / win_w) * 2.0 - 1.0;
-            let offset_y = 1.0 - (center_y_px / win_h) * 2.0;
-
-            let scale_x = vp_w / win_w;
-            let scale_y = vp_h / win_h;
-
-            clip_pos.x = clip_pos.x * scale_x + clip_pos.w * offset_x;
-            clip_pos.y = clip_pos.y * scale_y + clip_pos.w * offset_y;
-
-            // Push skybox to far depth (0.9999 * w so it's behind everything)
-            clip_pos.z = clip_pos.w * 0.9999;
-
-            return clip_pos;
-        }
-
-        fn pixel(self) -> vec4 {
-            // Viewport clipping
-            if self.screen_pos.x < self.draw_clip.x || self.screen_pos.x > self.draw_clip.z ||
-               self.screen_pos.y < self.draw_clip.y || self.screen_pos.y > self.draw_clip.w {
-                return vec4(0.0, 0.0, 0.0, 0.0);
+            pixel: fn() {
+                let scene = self.scene_texture.sample_as_bgra(self.pos)
+                let ndc_x = self.pos.x * 2.0 - 1.0
+                let ndc_y = 1.0 - self.pos.y * 2.0
+                let dir = normalize(
+                    self.cam_fwd.xyz
+                    + self.cam_right.xyz * (ndc_x * self.cam_right.w)
+                    + self.cam_up.xyz * (ndc_y * self.cam_up.w)
+                )
+                let t = dir.y
+                let up = clamp(t, 0.0, 1.0)
+                // morning: near-white at the horizon, pale yellow just above,
+                // soft peach-pink towards the zenith
+                // the default framing only shows ~5 deg of sky, so the whole
+                // white -> pale yellow -> peach-pink ramp lives near the horizon
+                // no yellow in the sky: near-white at the horizon lifting into
+                // a soft peach-pink, nothing more
+                let sky = mix(
+                    vec3(1.00, 0.985, 0.985),
+                    vec3(0.98, 0.895, 0.905),
+                    smoothstep(0.0, 0.10, up)
+                )
+                // the ground below, hazing into the sky as it approaches the
+                // horizon — without this the pale yellow meets the pink sky as
+                // a hard saturated band
+                let down = clamp(-t, 0.0, 1.0)
+                let earth0 = mix(vec3(1.00, 1.00, 0.773), vec3(0.88, 0.88, 0.65),
+                                 smoothstep(0.0, 0.75, down))
+                let ground_haze = 1.0 - smoothstep(0.006, 0.060, down)
+                let earth = mix(earth0, vec3(1.00, 0.985, 0.985), ground_haze)
+                let glow = pow(1.0 - min(abs(t) * 26.0, 1.0), 3.0)
+                let bg0 = mix(earth, sky, smoothstep(-0.010, 0.010, t))
+                    + vec3(0.22, 0.20, 0.21) * glow * 0.07
+                // the lamp: a small ~0.5 degree disc with a tight halo
+                let sd = dot(dir, normalize(self.light_dir.xyz))
+                let ang = acos(clamp(sd, -1.0, 1.0))
+                let disc = 1.0 - smoothstep(0.0075, 0.0105, ang)
+                let halo = (1.0 - smoothstep(0.0, 0.075, ang)) * 0.30
+                let bg = bg0 + (vec3(1.0, 0.99, 0.94) * disc
+                    + vec3(1.0, 0.88, 0.62) * halo) * self.light_dir.w
+                return vec4(
+                    scene.x + bg.x * (1.0 - scene.w),
+                    scene.y + bg.y * (1.0 - scene.w),
+                    scene.z + bg.z * (1.0 - scene.w),
+                    1.0
+                )
             }
-
-            // Gradient based on view direction (world_pos is the cube vertex position = view direction)
-            let dir = normalize(self.world_pos);
-            // Map Y from -1..1 to 0..1 for gradient
-            let t = 0.5 * (dir.y + 1.0);
-            return mix(self.bottom_color, self.top_color, t);
         }
+    }
 
-        fn fragment(self) -> vec4 {
-            return self.pixel();
+    #[cfg(target_arch = "wasm32")]
+    script_mod! {
+        use mod.prelude.widgets.*
+        use mod.shader.*
+        use mod.draw
+
+        mod.draw.DrawSceneComposite = mod.std.set_type_default() do #(DrawSceneComposite::script_shader(vm)){
+            ..mod.draw.DrawQuad
+            scene_texture: texture_2d(float)
+
+            pixel: fn() {
+                let s = self.scene_texture.sample_as_bgra(self.pos)
+                let scene = vec4(s.z, s.y, s.x, s.w)
+                let ndc_x = self.pos.x * 2.0 - 1.0
+                let ndc_y = 1.0 - self.pos.y * 2.0
+                let dir = normalize(
+                    self.cam_fwd.xyz
+                    + self.cam_right.xyz * (ndc_x * self.cam_right.w)
+                    + self.cam_up.xyz * (ndc_y * self.cam_up.w)
+                )
+                let t = dir.y
+                let up = clamp(t, 0.0, 1.0)
+                // morning: near-white at the horizon, pale yellow just above,
+                // soft peach-pink towards the zenith
+                // the default framing only shows ~5 deg of sky, so the whole
+                // white -> pale yellow -> peach-pink ramp lives near the horizon
+                // no yellow in the sky: near-white at the horizon lifting into
+                // a soft peach-pink, nothing more
+                let sky = mix(
+                    vec3(1.00, 0.985, 0.985),
+                    vec3(0.98, 0.895, 0.905),
+                    smoothstep(0.0, 0.10, up)
+                )
+                // the ground below, hazing into the sky as it approaches the
+                // horizon — without this the pale yellow meets the pink sky as
+                // a hard saturated band
+                let down = clamp(-t, 0.0, 1.0)
+                let earth0 = mix(vec3(1.00, 1.00, 0.773), vec3(0.88, 0.88, 0.65),
+                                 smoothstep(0.0, 0.75, down))
+                let ground_haze = 1.0 - smoothstep(0.006, 0.060, down)
+                let earth = mix(earth0, vec3(1.00, 0.985, 0.985), ground_haze)
+                let glow = pow(1.0 - min(abs(t) * 26.0, 1.0), 3.0)
+                let bg0 = mix(earth, sky, smoothstep(-0.010, 0.010, t))
+                    + vec3(0.22, 0.20, 0.21) * glow * 0.07
+                // the lamp: a small ~0.5 degree disc with a tight halo
+                let sd = dot(dir, normalize(self.light_dir.xyz))
+                let ang = acos(clamp(sd, -1.0, 1.0))
+                let disc = 1.0 - smoothstep(0.0075, 0.0105, ang)
+                let halo = (1.0 - smoothstep(0.0, 0.075, ang)) * 0.30
+                let bg = bg0 + (vec3(1.0, 0.99, 0.94) * disc
+                    + vec3(1.0, 0.88, 0.62) * halo) * self.light_dir.w
+                return vec4(
+                    scene.x + bg.x * (1.0 - scene.w),
+                    scene.y + bg.y * (1.0 - scene.w),
+                    scene.z + bg.z * (1.0 - scene.w),
+                    1.0
+                )
+            }
         }
     }
 }
 
-/// Draw shader for grid rendering
-#[derive(Live, LiveRegister)]
+#[derive(Script, ScriptHook, Debug)]
 #[repr(C)]
-pub struct DrawGrid {
-    #[rust] pub many_instances: Option<ManyInstances>,
-    #[live] pub geometry: GeometryMesh3D,
-    #[deref] pub draw_vars: DrawVars,
-    #[live] pub color: Vec4,
-    #[live] pub x_axis_color: Vec4,
-    #[live] pub z_axis_color: Vec4,
-    #[live(0.05)] pub grid_spacing: f32,
-    #[live(0.002)] pub line_width: f32,
-    // Model transform
-    #[live(vec4(1.0, 0.0, 0.0, 0.0))] pub transform_col0: Vec4,
-    #[live(vec4(0.0, 1.0, 0.0, 0.0))] pub transform_col1: Vec4,
-    #[live(vec4(0.0, 0.0, 1.0, 0.0))] pub transform_col2: Vec4,
-    #[live(vec4(0.0, 0.0, 0.0, 1.0))] pub transform_col3: Vec4,
-    // View transform
-    #[live(vec4(1.0, 0.0, 0.0, 0.0))] pub view_col0: Vec4,
-    #[live(vec4(0.0, 1.0, 0.0, 0.0))] pub view_col1: Vec4,
-    #[live(vec4(0.0, 0.0, 1.0, 0.0))] pub view_col2: Vec4,
-    #[live(vec4(0.0, 0.0, 0.0, 1.0))] pub view_col3: Vec4,
-    // Projection transform
-    #[live(vec4(1.0, 0.0, 0.0, 0.0))] pub proj_col0: Vec4,
-    #[live(vec4(0.0, 1.0, 0.0, 0.0))] pub proj_col1: Vec4,
-    #[live(vec4(0.0, 0.0, 1.0, 0.0))] pub proj_col2: Vec4,
-    #[live(vec4(0.0, 0.0, 0.0, 1.0))] pub proj_col3: Vec4,
-    
-    #[live] pub draw_clip: Vec4,
-    #[live] pub window_size: Vec2,
-    #[live(vec4(0.0, 0.0, 1024.0, 768.0))] pub viewport_rect: Vec4,
-    #[live(vec2(1024.0, 768.0))] pub full_size: Vec2,
+pub struct DrawGridPlane {
+    #[deref]
+    pub draw_vars: DrawVars,
+    #[live(vec4(0.92, 0.66, 0.44, 1.0))]
+    pub color: Vec4f,
+    #[live(2.0)]
+    pub extent: f32,
+    #[live(0.05)]
+    pub spacing: f32,
+    #[live(0.0)]
+    pub plane_y: f32,
+    /// world size of one screen pixel per unit of distance:
+    /// 2 * tan(fov_y / 2) / viewport_height_px
+    #[live(0.001)]
+    pub px_scale: f32,
+    #[live(1.0)]
+    pub depth_clip: f32,
 }
 
-impl LiveHook for DrawGrid {
-    fn before_apply(&mut self, cx: &mut Cx, apply: &mut Apply, index: usize, nodes: &[LiveNode]) {
-        self.draw_vars.before_apply_init_shader(cx, apply, index, nodes, &self.geometry);
-    }
-
-    fn after_apply(&mut self, cx: &mut Cx, apply: &mut Apply, index: usize, nodes: &[LiveNode]) {
-        self.draw_vars.after_apply_update_self(cx, apply, index, nodes, &self.geometry);
-    }
-}
-
-impl DrawGrid {
-    pub fn new_from_template(_cx: &mut Cx, template: &DrawGrid) -> Self {
-        let geom = GeometryMesh3D::new_empty();
-        let draw_vars = template.draw_vars.clone();
-        
-        DrawGrid {
-            many_instances: None,
-            geometry: geom,
-            draw_vars,
-            color: template.color,
-            x_axis_color: template.x_axis_color,
-            z_axis_color: template.z_axis_color,
-            grid_spacing: template.grid_spacing,
-            line_width: template.line_width,
-            transform_col0: template.transform_col0,
-            transform_col1: template.transform_col1,
-            transform_col2: template.transform_col2,
-            transform_col3: template.transform_col3,
-            view_col0: template.view_col0,
-            view_col1: template.view_col1,
-            view_col2: template.view_col2,
-            view_col3: template.view_col3,
-            proj_col0: template.proj_col0,
-            proj_col1: template.proj_col1,
-            proj_col2: template.proj_col2,
-            proj_col3: template.proj_col3,
-            draw_clip: template.draw_clip,
-            window_size: template.window_size,
-            viewport_rect: template.viewport_rect,
-            full_size: template.full_size,
-        }
-    }
-
-    pub fn create_ground_plane(&mut self, cx: &mut Cx, size: f32, y_pos: f32) {
-        let mesh = MeshData::ground_plane(size, y_pos);
-        self.geometry.upload_mesh_data(cx, mesh);
-        self.draw_vars.after_apply_update_self(
-            cx,
-            &mut Apply::from(ApplyFrom::UpdateFromDoc { file_id: Default::default() }),
-            0,
-            &[],
-            &self.geometry,
-        );
-    }
-
-    pub fn draw(&mut self, cx: &mut Cx2d) {
-        if let Some(mi) = &mut self.many_instances {
-            mi.instances.extend_from_slice(self.draw_vars.as_slice());
-        } else if self.draw_vars.can_instance() {
+impl DrawGridPlane {
+    pub fn draw(&mut self, cx: &mut CxDraw, geometry_id: GeometryId) {
+        self.draw_vars.geometry_id = Some(geometry_id);
+        if self.draw_vars.can_instance() {
             let new_area = cx.add_instance(&self.draw_vars);
             self.draw_vars.area = cx.update_area_refs(self.draw_vars.area, new_area);
         }
     }
-
-    pub fn begin_many_instances(&mut self, cx: &mut Cx2d) {
-        self.many_instances = cx.begin_many_instances(&self.draw_vars);
-    }
-
-    pub fn end_many_instances(&mut self, cx: &mut Cx2d) {
-        if let Some(mi) = self.many_instances.take() {
-            let new_area = cx.end_many_instances(mi);
-            self.draw_vars.area = cx.update_area_refs(self.draw_vars.area, new_area);
-        }
-    }
-
-    pub fn set_transform(&mut self, transform: &[f32; 16]) {
-        self.transform_col0 = vec4(transform[0], transform[1], transform[2], transform[3]);
-        self.transform_col1 = vec4(transform[4], transform[5], transform[6], transform[7]);
-        self.transform_col2 = vec4(transform[8], transform[9], transform[10], transform[11]);
-        self.transform_col3 = vec4(transform[12], transform[13], transform[14], transform[15]);
-    }
-
-    pub fn set_view_matrix(&mut self, m: &Mat4) {
-        self.view_col0 = vec4(m.v[0], m.v[1], m.v[2], m.v[3]);
-        self.view_col1 = vec4(m.v[4], m.v[5], m.v[6], m.v[7]);
-        self.view_col2 = vec4(m.v[8], m.v[9], m.v[10], m.v[11]);
-        self.view_col3 = vec4(m.v[12], m.v[13], m.v[14], m.v[15]);
-    }
-
-    pub fn set_projection_matrix(&mut self, m: &Mat4) {
-        self.proj_col0 = vec4(m.v[0], m.v[1], m.v[2], m.v[3]);
-        self.proj_col1 = vec4(m.v[4], m.v[5], m.v[6], m.v[7]);
-        self.proj_col2 = vec4(m.v[8], m.v[9], m.v[10], m.v[11]);
-        self.proj_col3 = vec4(m.v[12], m.v[13], m.v[14], m.v[15]);
-    }
-
-    pub fn set_draw_clip(&mut self, clip: Vec4) {
-        self.draw_clip = clip;
-    }
-
-    pub fn set_window_size(&mut self, size: Vec2) {
-        self.window_size = size;
-    }
-
-    pub fn set_viewport_rect(&mut self, rect: Vec4) {
-        self.viewport_rect = rect;
-    }
-
-    pub fn set_full_size(&mut self, size: Vec2) {
-        self.full_size = size;
-    }
 }
 
-/// Draw shader for mesh rendering
-#[derive(Live, LiveRegister)]
+#[derive(Script, ScriptHook, Debug)]
 #[repr(C)]
-pub struct DrawMesh {
-    #[rust] pub many_instances: Option<ManyInstances>,
-    #[live] pub geometry: GeometryMesh3D,
-    #[deref] pub draw_vars: DrawVars,
-    #[live] pub color: Vec4,
-    #[live] pub bottom_color: Vec4,
-    #[live(vec3(0.0, 0.0, 0.0))] pub mesh_pos: Vec3,
-    #[live(vec3(1.0, 1.0, 1.0))] pub mesh_scale: Vec3,
-    #[live(1.0)] pub depth_clip: f32,
-    #[live(0.0)] pub draw_grid_lines: f32,
-    // Model transform matrix
-    #[live(vec4(1.0, 0.0, 0.0, 0.0))] pub transform_col0: Vec4,
-    #[live(vec4(0.0, 1.0, 0.0, 0.0))] pub transform_col1: Vec4,
-    #[live(vec4(0.0, 0.0, 1.0, 0.0))] pub transform_col2: Vec4,
-    #[live(vec4(0.0, 0.0, 0.0, 1.0))] pub transform_col3: Vec4,
-    // View matrix
-    #[live(vec4(1.0, 0.0, 0.0, 0.0))] pub view_col0: Vec4,
-    #[live(vec4(0.0, 1.0, 0.0, 0.0))] pub view_col1: Vec4,
-    #[live(vec4(0.0, 0.0, 1.0, 0.0))] pub view_col2: Vec4,
-    #[live(vec4(0.0, 0.0, 0.0, 1.0))] pub view_col3: Vec4,
-    // Projection matrix
-    #[live(vec4(1.0, 0.0, 0.0, 0.0))] pub proj_col0: Vec4,
-    #[live(vec4(0.0, 1.0, 0.0, 0.0))] pub proj_col1: Vec4,
-    #[live(vec4(0.0, 0.0, 1.0, 0.0))] pub proj_col2: Vec4,
-    #[live(vec4(0.0, 0.0, 0.0, 1.0))] pub proj_col3: Vec4,
-    // Lighting
-    #[live(vec3(0.0, 0.5, 3.0))] pub camera_pos: Vec3,
-    #[live(0.5)] pub specular_strength: f32,
-    #[live(32.0)] pub shininess: f32,
-    #[live(1.4)] pub aspect_ratio: f32,
-    #[live] pub draw_clip: Vec4,
-    #[live] pub window_size: Vec2,
-    // Viewport transform for embedded rendering
-    #[live(vec4(0.0, 0.0, 1024.0, 768.0))] pub viewport_rect: Vec4,  // x, y, width, height
-    #[live(vec2(1024.0, 768.0))] pub full_size: Vec2,  // full window size
+pub struct DrawSceneComposite {
+    #[deref]
+    pub draw_super: DrawQuad,
+    /// xyz = camera right, w = tan(fov_x / 2)
+    #[live(vec4(1.0, 0.0, 0.0, 1.0))]
+    pub cam_right: Vec4f,
+    /// xyz = camera up, w = tan(fov_y / 2)
+    #[live(vec4(0.0, 1.0, 0.0, 1.0))]
+    pub cam_up: Vec4f,
+    /// xyz = camera forward
+    #[live(vec4(0.0, 0.0, -1.0, 0.0))]
+    pub cam_fwd: Vec4f,
+    /// xyz = direction towards the lamp, w = lamp switched on (0/1)
+    #[live(vec4(-0.35, 0.84, 0.42, 0.0))]
+    pub light_dir: Vec4f,
 }
 
-impl LiveHook for DrawMesh {
-    fn before_apply(&mut self, cx: &mut Cx, apply: &mut Apply, index: usize, nodes: &[LiveNode]) {
-        self.draw_vars.before_apply_init_shader(cx, apply, index, nodes, &self.geometry);
+impl DrawSceneComposite {
+    pub fn set_scene_texture(&mut self, texture: &Texture) {
+        self.draw_super.draw_vars.set_texture(0, texture);
     }
 
-    fn after_apply(&mut self, cx: &mut Cx, apply: &mut Apply, index: usize, nodes: &[LiveNode]) {
-        self.draw_vars.after_apply_update_self(cx, apply, index, nodes, &self.geometry);
-    }
 }
 
-impl DrawMesh {
-    /// Create a new DrawMesh for a robot link with separate geometry
-    pub fn new_for_link(_cx: &mut Cx, mesh_data: MeshData, template: &DrawMesh) -> Self {
-        let mut geom = GeometryMesh3D::new_empty();
-        geom.mesh_data = Some(mesh_data);
+#[derive(Script, ScriptHook, Debug)]
+#[repr(C)]
+pub struct DrawRobotMesh {
+    #[deref]
+    pub draw_vars: DrawVars,
+    #[live]
+    pub color: Vec4f,
+    #[live]
+    pub transform: Mat4f,
+    #[live(vec3(1.0, 1.0, 1.0))]
+    pub scale: Vec3f,
+    /// xyz = direction towards the lamp, w = lamp switched on (0/1).
+    /// Per-instance, not a uniform: set_uniform is unreliable on wasm.
+    #[live(vec4(-0.35, 0.84, 0.42, 0.0))]
+    pub key_light: Vec4f,
+    #[live(1.0)]
+    pub depth_clip: f32,
+}
 
-        let draw_vars = template.draw_vars.clone();
-
-        DrawMesh {
-            many_instances: None,
-            geometry: geom,
-            draw_vars,
-            color: vec4(1.0, 0.65, 0.1, 1.0),
-            bottom_color: vec4(0.2, 0.2, 0.25, 1.0),
-            mesh_pos: vec3(0.0, 0.0, 0.0),
-            mesh_scale: vec3(1.0, 1.0, 1.0),
-            depth_clip: 1.0,
-            draw_grid_lines: 0.0,
-            transform_col0: vec4(1.0, 0.0, 0.0, 0.0),
-            transform_col1: vec4(0.0, 1.0, 0.0, 0.0),
-            transform_col2: vec4(0.0, 0.0, 1.0, 0.0),
-            transform_col3: vec4(0.0, 0.0, 0.0, 1.0),
-            view_col0: vec4(1.0, 0.0, 0.0, 0.0),
-            view_col1: vec4(0.0, 1.0, 0.0, 0.0),
-            view_col2: vec4(0.0, 0.0, 1.0, 0.0),
-            view_col3: vec4(0.0, 0.0, 0.0, 1.0),
-            proj_col0: vec4(1.0, 0.0, 0.0, 0.0),
-            proj_col1: vec4(0.0, 1.0, 0.0, 0.0),
-            proj_col2: vec4(0.0, 0.0, 1.0, 0.0),
-            proj_col3: vec4(0.0, 0.0, 0.0, 1.0),
-            camera_pos: vec3(0.0, 0.5, 3.0),
-            specular_strength: 0.5,
-            shininess: 32.0,
-            aspect_ratio: 1.4,
-            draw_clip: vec4(0.0, 0.0, 10000.0, 10000.0),
-            window_size: vec2(1024.0, 768.0),
-            viewport_rect: vec4(0.0, 0.0, 1024.0, 768.0),
-            full_size: vec2(1024.0, 768.0),
-        }
-    }
-
-    pub fn set_transform(&mut self, m: &Mat4) {
-        self.transform_col0 = vec4(m.v[0], m.v[1], m.v[2], m.v[3]);
-        self.transform_col1 = vec4(m.v[4], m.v[5], m.v[6], m.v[7]);
-        self.transform_col2 = vec4(m.v[8], m.v[9], m.v[10], m.v[11]);
-        self.transform_col3 = vec4(m.v[12], m.v[13], m.v[14], m.v[15]);
-    }
-
-    pub fn set_view_matrix(&mut self, m: &Mat4) {
-        self.view_col0 = vec4(m.v[0], m.v[1], m.v[2], m.v[3]);
-        self.view_col1 = vec4(m.v[4], m.v[5], m.v[6], m.v[7]);
-        self.view_col2 = vec4(m.v[8], m.v[9], m.v[10], m.v[11]);
-        self.view_col3 = vec4(m.v[12], m.v[13], m.v[14], m.v[15]);
-    }
-
-    pub fn set_projection_matrix(&mut self, m: &Mat4) {
-        self.proj_col0 = vec4(m.v[0], m.v[1], m.v[2], m.v[3]);
-        self.proj_col1 = vec4(m.v[4], m.v[5], m.v[6], m.v[7]);
-        self.proj_col2 = vec4(m.v[8], m.v[9], m.v[10], m.v[11]);
-        self.proj_col3 = vec4(m.v[12], m.v[13], m.v[14], m.v[15]);
-    }
-
-    pub fn set_camera_position(&mut self, pos: Vec3) {
-        self.camera_pos = pos;
-    }
-
-    pub fn set_specular_strength(&mut self, strength: f32) {
-        self.specular_strength = strength;
-    }
-
-    pub fn set_draw_clip(&mut self, clip: Vec4) {
-        self.draw_clip = clip;
-    }
-
-    pub fn set_window_size(&mut self, size: Vec2) {
-        self.window_size = size;
-    }
-
-    pub fn set_viewport_rect(&mut self, rect: Vec4) {
-        self.viewport_rect = rect;
-    }
-
-    pub fn set_full_size(&mut self, size: Vec2) {
-        self.full_size = size;
-    }
-
-    pub fn reset_transform(&mut self) {
-        self.transform_col0 = vec4(1.0, 0.0, 0.0, 0.0);
-        self.transform_col1 = vec4(0.0, 1.0, 0.0, 0.0);
-        self.transform_col2 = vec4(0.0, 0.0, 1.0, 0.0);
-        self.transform_col3 = vec4(0.0, 0.0, 0.0, 1.0);
-    }
-
-    pub fn init_link_geometry(&mut self, cx: &mut Cx) {
-        if let Some(mesh_data) = self.geometry.mesh_data.take() {
-            self.geometry.upload_mesh_data(cx, mesh_data);
-        }
-        self.draw_vars.after_apply_update_self(
-            cx,
-            &mut Apply::from(ApplyFrom::UpdateFromDoc { file_id: Default::default() }),
-            0,
-            &[],
-            &self.geometry,
-        );
-    }
-
-    pub fn draw(&mut self, cx: &mut Cx2d) {
-        if let Some(mi) = &mut self.many_instances {
-            mi.instances.extend_from_slice(self.draw_vars.as_slice());
-        } else if self.draw_vars.can_instance() {
+impl DrawRobotMesh {
+    pub fn draw(&mut self, cx: &mut CxDraw, geometry_id: GeometryId) {
+        self.draw_vars.geometry_id = Some(geometry_id);
+        if self.draw_vars.can_instance() {
             let new_area = cx.add_instance(&self.draw_vars);
             self.draw_vars.area = cx.update_area_refs(self.draw_vars.area, new_area);
         }
-    }
-
-    pub fn new_draw_call(&self, cx: &mut Cx2d) {
-        cx.new_draw_call(&self.draw_vars);
-    }
-
-    pub fn begin_many_instances(&mut self, cx: &mut Cx2d) {
-        self.many_instances = cx.begin_many_instances(&self.draw_vars);
-    }
-
-    pub fn end_many_instances(&mut self, cx: &mut Cx2d) {
-        if let Some(mi) = self.many_instances.take() {
-            let new_area = cx.end_many_instances(mi);
-            self.draw_vars.area = cx.update_area_refs(self.draw_vars.area, new_area);
-        }
-    }
-}
-
-/// Draw shader for sky gradient background
-#[derive(Live, LiveRegister)]
-#[repr(C)]
-pub struct DrawSkybox {
-    #[rust] pub many_instances: Option<ManyInstances>,
-    #[live] pub geometry: GeometryMesh3D,
-    #[deref] pub draw_vars: DrawVars,
-
-    #[live(vec4(0.7, 0.8, 0.9, 1.0))] pub top_color: Vec4,
-    #[live(vec4(0.9, 0.95, 0.9, 1.0))] pub bottom_color: Vec4,
-
-    // View transform
-    #[live(vec4(1.0, 0.0, 0.0, 0.0))] pub view_col0: Vec4,
-    #[live(vec4(0.0, 1.0, 0.0, 0.0))] pub view_col1: Vec4,
-    #[live(vec4(0.0, 0.0, 1.0, 0.0))] pub view_col2: Vec4,
-    #[live(vec4(0.0, 0.0, 0.0, 1.0))] pub view_col3: Vec4,
-    // Projection transform
-    #[live(vec4(1.0, 0.0, 0.0, 0.0))] pub proj_col0: Vec4,
-    #[live(vec4(0.0, 1.0, 0.0, 0.0))] pub proj_col1: Vec4,
-    #[live(vec4(0.0, 0.0, 1.0, 0.0))] pub proj_col2: Vec4,
-    #[live(vec4(0.0, 0.0, 0.0, 1.0))] pub proj_col3: Vec4,
-
-    #[live(vec4(0.0, 0.0, 10000.0, 10000.0))] pub draw_clip: Vec4,
-    #[live(vec4(0.0, 0.0, 1024.0, 768.0))] pub viewport_rect: Vec4,
-    #[live(vec2(1024.0, 768.0))] pub full_size: Vec2,
-}
-
-impl LiveHook for DrawSkybox {
-    fn before_apply(&mut self, cx: &mut Cx, apply: &mut Apply, index: usize, nodes: &[LiveNode]) {
-        self.draw_vars.before_apply_init_shader(cx, apply, index, nodes, &self.geometry);
-    }
-
-    fn after_apply(&mut self, cx: &mut Cx, apply: &mut Apply, index: usize, nodes: &[LiveNode]) {
-        self.draw_vars.after_apply_update_self(cx, apply, index, nodes, &self.geometry);
-    }
-}
-
-impl DrawSkybox {
-    pub fn init_geometry(&mut self, cx: &mut Cx) {
-        // Create a skybox cube (faces pointing inward for viewing from inside)
-        let mesh = MeshData::skybox_cube(100.0);
-        self.geometry.upload_mesh_data(cx, mesh);
-        self.draw_vars.after_apply_update_self(
-            cx,
-            &mut Apply::from(ApplyFrom::UpdateFromDoc { file_id: Default::default() }),
-            0,
-            &[],
-            &self.geometry,
-        );
-    }
-
-    pub fn draw(&mut self, cx: &mut Cx2d) {
-        if let Some(mi) = &mut self.many_instances {
-            mi.instances.extend_from_slice(self.draw_vars.as_slice());
-        } else if self.draw_vars.can_instance() {
-            let new_area = cx.add_instance(&self.draw_vars);
-            self.draw_vars.area = cx.update_area_refs(self.draw_vars.area, new_area);
-        }
-    }
-
-    pub fn begin_many_instances(&mut self, cx: &mut Cx2d) {
-        self.many_instances = cx.begin_many_instances(&self.draw_vars);
-    }
-
-    pub fn end_many_instances(&mut self, cx: &mut Cx2d) {
-        if let Some(mi) = self.many_instances.take() {
-            let new_area = cx.end_many_instances(mi);
-            self.draw_vars.area = cx.update_area_refs(self.draw_vars.area, new_area);
-        }
-    }
-
-    pub fn set_view_matrix(&mut self, m: &Mat4) {
-        self.view_col0 = vec4(m.v[0], m.v[1], m.v[2], m.v[3]);
-        self.view_col1 = vec4(m.v[4], m.v[5], m.v[6], m.v[7]);
-        self.view_col2 = vec4(m.v[8], m.v[9], m.v[10], m.v[11]);
-        self.view_col3 = vec4(m.v[12], m.v[13], m.v[14], m.v[15]);
-    }
-
-    pub fn set_projection_matrix(&mut self, m: &Mat4) {
-        self.proj_col0 = vec4(m.v[0], m.v[1], m.v[2], m.v[3]);
-        self.proj_col1 = vec4(m.v[4], m.v[5], m.v[6], m.v[7]);
-        self.proj_col2 = vec4(m.v[8], m.v[9], m.v[10], m.v[11]);
-        self.proj_col3 = vec4(m.v[12], m.v[13], m.v[14], m.v[15]);
-    }
-
-    pub fn set_draw_clip(&mut self, clip: Vec4) {
-        self.draw_clip = clip;
-    }
-
-    pub fn set_viewport_rect(&mut self, rect: Vec4) {
-        self.viewport_rect = rect;
-    }
-
-    pub fn set_full_size(&mut self, size: Vec2) {
-        self.full_size = size;
     }
 }

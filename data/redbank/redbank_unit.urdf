@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<!-- Redbank III unit: Ø95x42 puck + Samyang 135/2, generated from redbank-iii/cad -->
+<robot name="redbank_iii_unit">
+  <link name="cap">
+    <visual>
+      <origin xyz="0 0 -0.003" rpy="0 0 0"/>
+      <geometry><mesh filename="meshes/tube_rear_cap.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.22 0.23 0.25 1.0"/></material>
+    </visual>
+  </link>
+  <link name="drum">
+    <visual>
+      <origin xyz="0 0 0.042" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/tube_body.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.35 0.52 0.65 1.0"/></material>
+    </visual>
+  </link>
+  <link name="lens">
+    <visual>
+      <origin xyz="0 0 0.042" rpy="-1.5707963 0 0"/>
+      <geometry><mesh filename="meshes/lens.stl" scale="0.001 0.001 0.001"/></geometry>
+      <material name="m"><color rgba="0.10 0.10 0.11 1.0"/></material>
+    </visual>
+  </link>
+  <joint name="bayonet_twist" type="revolute">
+    <parent link="cap"/><child link="drum"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.6109" upper="0.6109" effort="10" velocity="1"/>
+  </joint>
+  <joint name="focus_ring" type="continuous">
+    <parent link="drum"/><child link="lens"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+</robot>
