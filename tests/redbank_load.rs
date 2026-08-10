@@ -93,3 +93,29 @@ fn world_bounds_account_for_joint_transforms() {
         lmax
     );
 }
+
+/// The widget must not hard-code any model: a library consumer gets an empty
+/// scene until it asks for something. Guarding this in a test because the
+/// viewer previously auto-loaded a Redbank URDF on first draw, which made the
+/// crate unusable for anyone else.
+#[test]
+fn library_ships_no_default_model() {
+    let src = include_str!("../src/robot_view.rs");
+    let body = src
+        .split("fn ensure_initialized")
+        .nth(1)
+        .expect("ensure_initialized should exist");
+    let body = &body[..body.find("\n    }").unwrap_or(body.len())];
+    let lower = body.to_lowercase();
+    // a hard-coded model would appear as a quoted path, e.g. "foo/bar.urdf"
+    assert!(
+        !lower.contains(".urdf\""),
+        "ensure_initialized must not name a URDF file: {body}"
+    );
+    for needle in ["redbank", "so100"] {
+        assert!(
+            !lower.contains(needle),
+            "ensure_initialized must not reference a specific model ({needle})"
+        );
+    }
+}

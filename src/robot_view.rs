@@ -23,7 +23,15 @@ script_mod! {
     mod.widgets.RobotView = set_type_default() do mod.widgets.RobotViewBase{
         width: Fill
         height: Fill
-        clear_color: #x0d1117
+        // model to show; leave empty and call `load_robot` from Rust instead
+        urdf: ""
+        assets: ""
+        // environment
+        show_grid: true
+        sky_horizon: #xFFFBFB
+        sky_zenith: #xFAE5E7
+        ground_color: #xFFFFC5
+        grid_color: #x6B6A3D
         draw_bg: mod.draw.DrawSceneComposite{}
         draw_mesh: mod.draw.DrawRobotMesh{}
         draw_grid: mod.draw.DrawGridPlane{}
@@ -99,6 +107,19 @@ fn z_up_to_y_up() -> glam::Mat4 {
 const DEFAULT_YAW: f32 = 0.72;
 const DEFAULT_PITCH: f32 = 0.16;
 
+/// What the widget reports back to its host. Read these with
+/// `robot_view.loaded(actions)` / `.load_failed(actions)` on a `WidgetRef`,
+/// or match on the action directly.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum RobotViewAction {
+    #[default]
+    None,
+    /// A model finished loading.
+    Loaded { links: usize, movable_joints: usize },
+    /// A model failed to load; the scene is unchanged.
+    LoadFailed { path: String, error: String },
+}
+
 const DEFAULT_LINK_COLOR: [f32; 4] = [0.62, 0.65, 0.70, 1.0];
 const SELECTED_TINT: [f32; 3] = [1.0, 0.75, 0.25];
 
@@ -114,6 +135,22 @@ pub struct RobotView {
     layout: Layout,
     #[live(true)]
     visible: bool,
+    /// URDF to load on first draw. Empty = start with no model.
+    #[live]
+    urdf: String,
+    /// Directory (or "embedded") the URDF's meshes resolve against.
+    #[live]
+    assets: String,
+    #[live(true)]
+    show_grid: bool,
+    #[live(vec4(1.0, 0.985, 0.985, 1.0))]
+    sky_horizon: Vec4f,
+    #[live(vec4(0.98, 0.895, 0.905, 1.0))]
+    sky_zenith: Vec4f,
+    #[live(vec4(1.0, 1.0, 0.773, 1.0))]
+    ground_color: Vec4f,
+    #[live(vec4(0.42, 0.41, 0.24, 1.0))]
+    grid_color: Vec4f,
     #[live]
     draw_bg: DrawSceneComposite,
     #[live]
@@ -195,6 +232,9 @@ pub struct RobotView {
     /// needs it to keep its lines a pixel wide all the way to the horizon
     #[rust(0.001f32)]
     px_scale: f32,
+    /// outcome of the last load, emitted as a widget action on the next event
+    #[rust]
+    last_action: RobotViewAction,
 }
 
 impl RobotView {
@@ -232,19 +272,21 @@ impl RobotView {
             .set_depth_texture(cx, &self.depth_texture, DrawPassClearDepth::ClearWith(1.0));
         cx.passes[self.pass.draw_pass_id()].keep_camera_matrix = true;
 
-        if self.robot.is_none() {
-            #[cfg(target_arch = "wasm32")]
-            self.load_robot("redbank_unit.urdf", "embedded");
-            #[cfg(not(target_arch = "wasm32"))]
-            self.load_robot("data/redbank/redbank_unit.urdf", "data/redbank");
+        // No built-in model: a library widget shows whatever the host asked
+        // for, either via the `urdf`/`assets` properties or `load_robot`.
+        if self.robot.is_none() && !self.urdf.is_empty() {
+            let (urdf, assets) = (self.urdf.clone(), self.assets.clone());
+            // the outcome is published as a widget action on the next event
+            let _ = self.load_robot(&urdf, &assets);
         }
     }
 
     /// Load (or reload) a robot from a URDF path. Geometry uploads happen
-    /// lazily on the next draw.
-    pub fn load_robot(&mut self, urdf_path: &str, assets_dir: &str) {
+    /// lazily on the next draw. Returns the outcome so a host that calls this
+    /// directly can react without waiting for the widget action.
+    pub fn load_robot(&mut self, urdf_path: &str, assets_dir: &str) -> Result<(), String> {
         log!("RobotView: loading {}", urdf_path);
-        match load_robot(urdf_path, assets_dir) {
+        self.last_action = match load_robot(urdf_path, assets_dir) {
             Ok(mut robot) => {
                 ForwardKinematics::update(&mut robot);
                 self.movable = robot
@@ -262,14 +304,82 @@ impl RobotView {
 
                 log!("RobotView: {} links, {} movable joints",
                      self.robot_links_dbg(&robot), self.movable.len());
+                let links = robot.links.len();
+                let joints = self.movable.len();
                 self.robot = Some(robot);
                 self.geometries.clear();
                 self.geometries_dirty = true;
+                RobotViewAction::Loaded { links, movable_joints: joints }
             }
             Err(e) => {
                 error!("RobotView: FAILED to load {}: {}", urdf_path, e);
+                RobotViewAction::LoadFailed {
+                    path: urdf_path.to_string(),
+                    error: e.to_string(),
+                }
             }
+        };
+        match &self.last_action {
+            RobotViewAction::LoadFailed { error, .. } => Err(error.clone()),
+            _ => Ok(()),
         }
+    }
+
+    /// Remove the current model, leaving an empty scene.
+    pub fn clear_robot(&mut self, cx: &mut Cx) {
+        self.robot = None;
+        self.movable.clear();
+        self.geometries.clear();
+        self.geometry_pool.clear();
+        self.selected = 0;
+        self.animating = false;
+        self.area.redraw(cx);
+    }
+
+    /// The loaded model, for hosts that want to inspect links/joints.
+    pub fn robot(&self) -> Option<&Robot> {
+        self.robot.as_ref()
+    }
+
+    /// Indices into the URDF joint list that this widget treats as movable.
+    pub fn movable_joints(&self) -> &[usize] {
+        &self.movable
+    }
+
+    /// Current angles of the movable joints, in the same order as
+    /// `set_joint_angles` expects them.
+    pub fn joint_angles(&self) -> Vec<f32> {
+        let Some(robot) = &self.robot else { return Vec::new() };
+        self.movable.iter().map(|&i| robot.joints[i].angle).collect()
+    }
+
+    /// Re-frame the camera on the current model and reset the orbit.
+    pub fn reset_view(&mut self, cx: &mut Cx) {
+        self.reset_pose(cx);
+    }
+
+    /// Direction the key light points FROM, as (azimuth, elevation) radians.
+    pub fn light_angles(&self) -> (f32, f32) {
+        (self.light_yaw, self.light_pitch)
+    }
+
+    /// Aim the key light. Elevation is clamped to the usable range.
+    pub fn set_light_angles(&mut self, cx: &mut Cx, yaw: f32, pitch: f32) {
+        self.light_yaw = yaw;
+        self.light_pitch = pitch.clamp(-1.55, 1.55);
+        self.area.redraw(cx);
+    }
+
+    pub fn is_animating(&self) -> bool {
+        self.animating
+    }
+
+    pub fn set_animating(&mut self, cx: &mut Cx, on: bool) {
+        self.animating = on;
+        if on {
+            self.next_frame = cx.new_next_frame();
+        }
+        self.area.redraw(cx);
     }
 
     /// Drive all movable joints from a state vector (e.g. dataset playback).
@@ -596,18 +706,125 @@ impl RobotView {
         }
 
         let grid_geom = self.ensure_grid_geometry(cx.cx);
+        self.draw_grid.color = self.grid_color;
+        self.draw_grid.soil_color = self.ground_color;
         self.draw_grid.extent = self.grid_extent;
         self.draw_grid.spacing = self.grid_spacing;
         self.draw_grid.plane_y = self.grid_y;
         self.draw_grid.px_scale = self.px_scale;
         self.draw_grid.depth_clip = 0.0;
-        self.draw_grid.draw(cx, grid_geom);
+        if self.show_grid {
+            self.draw_grid.draw(cx, grid_geom);
+        }
 
         if let Some(previous_world) = previous_world {
             let _ = cx.set_scene_world_transform_3d(previous_world);
         }
         cx.end_scene_3d();
         self.draw_list.end(cx);
+    }
+}
+
+/// Host-facing handle. Grab one with `ui.robot_view(cx, ids!(viewport))`
+/// (or `WidgetRef::as_robot_view`) and drive the widget through it — these
+/// wrap the borrow for you.
+impl RobotViewRef {
+    /// Load a model. `assets_dir` is a directory, or `"embedded"` to resolve
+    /// mesh names through [`crate::robot::set_virtual_assets`].
+    pub fn load_robot(&self, cx: &mut Cx, urdf: &str, assets_dir: &str) -> Result<(), String> {
+        let r = match self.borrow_mut() {
+            Some(mut inner) => inner.load_robot(urdf, assets_dir),
+            None => Err("RobotView not found".to_string()),
+        };
+        self.redraw(cx);
+        r
+    }
+
+    /// Drop the current model.
+    pub fn clear_robot(&self, cx: &mut Cx) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.clear_robot(cx);
+        }
+    }
+
+    /// `Some((links, movable_joints))` on the frame a model finished loading.
+    pub fn loaded(&self, actions: &Actions) -> Option<(usize, usize)> {
+        if let Some(item) = actions.find_widget_action(self.widget_uid()) {
+            if let RobotViewAction::Loaded { links, movable_joints } = item.cast() {
+                return Some((links, movable_joints));
+            }
+        }
+        None
+    }
+
+    /// `Some((path, error))` on the frame a load failed.
+    pub fn load_failed(&self, actions: &Actions) -> Option<(String, String)> {
+        if let Some(item) = actions.find_widget_action(self.widget_uid()) {
+            if let RobotViewAction::LoadFailed { path, error } = item.cast() {
+                return Some((path, error));
+            }
+        }
+        None
+    }
+
+    /// Pose the movable joints, in URDF order. Values are applied unclamped
+    /// so recorded data renders exactly as recorded.
+    pub fn set_joint_angles(&self, cx: &mut Cx, angles: &[f32]) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.set_joint_angles(cx, angles);
+        }
+    }
+
+    /// Current movable-joint angles, matching `set_joint_angles` order.
+    pub fn joint_angles(&self) -> Vec<f32> {
+        self.borrow()
+            .map(|inner| inner.joint_angles())
+            .unwrap_or_default()
+    }
+
+    /// Number of movable joints in the loaded model.
+    pub fn movable_joint_count(&self) -> usize {
+        self.borrow()
+            .map(|inner| inner.movable_joints().len())
+            .unwrap_or(0)
+    }
+
+    /// Re-frame the camera on the model and reset the orbit.
+    pub fn reset_view(&self, cx: &mut Cx) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.reset_view(cx);
+        }
+    }
+
+    pub fn is_light_on(&self) -> bool {
+        self.borrow()
+            .map(|inner| inner.is_light_on())
+            .unwrap_or(false)
+    }
+
+    pub fn set_light_on(&self, cx: &mut Cx, on: bool) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.set_light_on(cx, on);
+        }
+    }
+
+    /// Aim the key light: azimuth and elevation in radians.
+    pub fn set_light_angles(&self, cx: &mut Cx, yaw: f32, pitch: f32) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.set_light_angles(cx, yaw, pitch);
+        }
+    }
+
+    pub fn is_animating(&self) -> bool {
+        self.borrow()
+            .map(|inner| inner.is_animating())
+            .unwrap_or(false)
+    }
+
+    pub fn set_animating(&self, cx: &mut Cx, on: bool) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.set_animating(cx, on);
+        }
     }
 }
 
@@ -640,6 +857,12 @@ impl WidgetNode for RobotView {
 
 impl Widget for RobotView {
     fn handle_event(&mut self, cx: &mut Cx, event: &Event, _scope: &mut Scope) {
+        // a load can happen outside the event loop (DSL property, host call),
+        // so publish its outcome on the next event the widget sees
+        if self.last_action != RobotViewAction::None {
+            let action = std::mem::take(&mut self.last_action);
+            cx.widget_action(self.uid, action);
+        }
         // pan: shift+drag, right-drag or middle-drag (XrCamera only orbits/zooms)
         // A late script re-apply (web: fires when resources finish loading)
         // resets #[rust] state — view_rect, camera viewport — after the last
@@ -802,6 +1025,9 @@ impl Widget for RobotView {
         }
         let l = self.light_vec();
         self.draw_bg.light_dir = vec4(l[0], l[1], l[2], if self.light_on { 1.0 } else { 0.0 });
+        self.draw_bg.sky_horizon = self.sky_horizon;
+        self.draw_bg.sky_zenith = self.sky_zenith;
+        self.draw_bg.ground_color = self.ground_color;
         self.draw_bg.draw_abs(cx, rect);
         self.area = self.draw_bg.area();
         cx.set_pass_area(&self.pass, self.area);

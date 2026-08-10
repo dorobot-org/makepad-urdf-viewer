@@ -15,6 +15,9 @@ rust-version = "1.75"
 [features]
 default = []
 profiling = []  # Enable performance profiling output
+# LeRobot parquet episode playback. Off by default so integrating this widget
+# does not pull arrow/parquet; native-only.
+episode = ["dep:parquet", "dep:arrow"]
 
 [dependencies]
 makepad-widgets = { git = "https://github.com/makepad/makepad", branch = "dev" }
@@ -24,10 +27,11 @@ glam = "0.29"
 stl_io = "0.7"
 serde_json = "1"
 
-# episode playback (parquet) is native-only; wasm builds exclude it
+# episode playback (parquet) is native-only and optional; see the `episode`
+# feature. Integrators get neither dependency unless they ask for it.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-parquet = "56"
-arrow = "56"
+parquet = { version = "56", optional = true }
+arrow = { version = "56", optional = true }
 
 # Upstream dev wasm is broken: web init indexes windows[id_zero] before any
 # window exists (panic_bounds_check in CxWindowPool). Local copy carries the

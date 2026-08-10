@@ -17,7 +17,7 @@ pub use makepad_xr;
 
 use makepad_widgets::*;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(feature = "episode", not(target_arch = "wasm32")))]
 pub mod episode;
 pub mod error;
 pub mod mesh;
