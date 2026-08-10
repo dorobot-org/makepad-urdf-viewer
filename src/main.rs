@@ -125,12 +125,8 @@ script_mod! {
                                 height: Fill
                                 urdf: "data/redbank/redbank_unit.urdf"
                                 assets: "data/redbank"
-                                // studio theme: a tool wants the model to pop off a
-                                // neutral ground, not compete with a bright sky
-                                sky_zenith: #x0F1218
-                                sky_horizon: #x1C212B
-                                ground_color: #x171B22
-                                grid_color: #x39424F
+                                // the tuned daylight gradient — peach-pink sky
+                                // over #FFFFC5 ground (the widget's defaults)
                             }
                         }
 
