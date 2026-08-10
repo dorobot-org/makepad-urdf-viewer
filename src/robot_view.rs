@@ -398,6 +398,14 @@ impl RobotView {
         self.area.redraw(cx);
     }
 
+    /// Aim the orbit camera (radians). Framing and distance are untouched.
+    pub fn set_view_angles(&mut self, cx: &mut Cx, yaw: f32, pitch: f32) {
+        self.camera.orbit_yaw = yaw;
+        self.camera.orbit_pitch = pitch.clamp(-1.55, 1.55);
+        self.pan_offset = vec2(0.0, 0.0);
+        self.area.redraw(cx);
+    }
+
     pub fn is_animating(&self) -> bool {
         self.animating
     }
@@ -736,6 +744,8 @@ impl RobotView {
         let grid_geom = self.ensure_grid_geometry(cx.cx);
         self.draw_grid.color = self.grid_color;
         self.draw_grid.soil_color = self.ground_color;
+        // the plane must fade into the same colour the sky shows there
+        self.draw_grid.haze_color = self.sky_horizon;
         self.draw_grid.extent = self.grid_extent;
         self.draw_grid.spacing = self.grid_spacing;
         self.draw_grid.plane_y = self.grid_y;
@@ -851,6 +861,25 @@ impl RobotViewRef {
     pub fn set_light_angles(&self, cx: &mut Cx, yaw: f32, pitch: f32) {
         if let Some(mut inner) = self.borrow_mut() {
             inner.set_light_angles(cx, yaw, pitch);
+        }
+    }
+
+    /// Point the camera without changing what it is framed on — for view
+    /// presets (iso / front / side / top).
+    pub fn set_view_angles(&self, cx: &mut Cx, yaw: f32, pitch: f32) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.set_view_angles(cx, yaw, pitch);
+        }
+    }
+
+    pub fn is_grid_visible(&self) -> bool {
+        self.borrow().map(|i| i.show_grid).unwrap_or(false)
+    }
+
+    pub fn set_grid_visible(&self, cx: &mut Cx, on: bool) {
+        if let Some(mut inner) = self.borrow_mut() {
+            inner.show_grid = on;
+            inner.area.redraw(cx);
         }
     }
 

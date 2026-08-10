@@ -206,9 +206,9 @@ script_mod! {
             let hz = clamp(1.0 - smoothstep(0.006, 0.060, haze_h / dist), 0.0, 1.0)
             // premultiplied output for makepad's ONE / ONE_MINUS_SRC_ALPHA blend
             return vec4(
-                mix(self.soil_color.x * soil_a + self.color.x * line_a, 1.000 * alpha, hz),
-                mix(self.soil_color.y * soil_a + self.color.y * line_a, 0.985 * alpha, hz),
-                mix(self.soil_color.z * soil_a + self.color.z * line_a, 0.985 * alpha, hz),
+                mix(self.soil_color.x * soil_a + self.color.x * line_a, self.haze_color.x * alpha, hz),
+                mix(self.soil_color.y * soil_a + self.color.y * line_a, self.haze_color.y * alpha, hz),
+                mix(self.soil_color.z * soil_a + self.color.z * line_a, self.haze_color.z * alpha, hz),
                 alpha
             )
         }
@@ -376,6 +376,10 @@ pub struct DrawGridPlane {
     /// ground fill colour (the grid lines use `color`)
     #[live(vec4(1.0, 1.0, 0.773, 1.0))]
     pub soil_color: Vec4f,
+    /// what the ground fades into at the horizon — must match the sky there,
+    /// or the plane ends in a band of the wrong colour
+    #[live(vec4(1.0, 0.985, 0.985, 1.0))]
+    pub haze_color: Vec4f,
     #[live(0.0)]
     pub plane_y: f32,
     /// world size of one screen pixel per unit of distance:

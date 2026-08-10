@@ -7,6 +7,7 @@ pub use makepad_urdf_player;
 pub use makepad_widgets;
 pub use makepad_xr;
 
+use makepad_urdf_player::joint_panel::{JointPanelWidgetRefExt, JointRow};
 use makepad_urdf_player::robot::{scan_folder, ModelFile, ModelKind};
 use makepad_urdf_player::robot_view::RobotViewWidgetRefExt;
 use makepad_widgets::*;
@@ -20,40 +21,138 @@ script_mod! {
     load_all_resources() do #(App::script_component(vm)){
         ui: Root{
             main_window := Window{
-                window.inner_size: vec2(1280, 820)
+                window.inner_size: vec2(1320, 860)
                 body +: {
                     app_view := SolidView{
                         width: Fill
                         height: Fill
                         flow: Down
-                        draw_bg +: {color: #x0d1116}
+                        draw_bg +: {color: #x0F1218}
 
+                        // ---------------- toolbar ----------------
                         header := SolidView{
                             width: Fill
                             height: 46.0
                             flow: Right
                             align: Align{x: 0.0 y: 0.5}
-                            padding: Inset{left: 12.0 right: 12.0}
-                            spacing: 8.0
-                            draw_bg +: {color: #x171d24}
+                            padding: Inset{left: 10.0 right: 10.0}
+                            spacing: 6.0
+                            draw_bg +: {color: #x161A22}
 
-                            rb_unit_btn := Button{text: "Redbank III Unit"}
-                            rb_array_btn := Button{text: "Redbank 4x8 Array"}
-                            so100_btn := Button{text: "SO-100 Arm"}
                             open_btn := Button{text: "Open folder…"}
                             model_pick := DropDown{labels: ["(no folder)"]}
-                            light_btn := Button{text: "Light: off"}
-                            hint := Label{
-                                text: "drag orbit · alt drag light · shift/right pan · wheel zoom · arrows joints · A/R/L"
-                                draw_text +: {color: #x8391a0}
+                            rb_unit_btn := Button{text: "Unit"}
+                            rb_array_btn := Button{text: "Array"}
+                            so100_btn := Button{text: "SO-100"}
+                            view_iso := Button{text: "Iso"}
+                            view_front := Button{text: "Front"}
+                            view_side := Button{text: "Side"}
+                            view_top := Button{text: "Top"}
+                            grid_btn := Button{text: "Grid"}
+                            light_btn := Button{text: "Light"}
+                            anim_btn := Button{text: "Animate"}
+                            reset_btn := Button{text: "Reset view"}
+                        }
+
+                        // ---------------- body ----------------
+                        split := View{
+                            width: Fill
+                            height: Fill
+                            flow: Right
+
+                            sidebar := SolidView{
+                                width: 280.0
+                                height: Fill
+                                flow: Down
+                                draw_bg +: {color: #x161A22}
+
+                                info := SolidView{
+                                    width: Fill
+                                    height: Fit
+                                    flow: Down
+                                    padding: Inset{left: 13.0 right: 13.0 top: 11.0 bottom: 11.0}
+                                    spacing: 3.0
+                                    draw_bg +: {color: #x161A22}
+
+                                    model_name := H4{
+                                        text: "no model"
+                                        draw_text +: {color: #xE8ECF4}
+                                    }
+                                    model_path := Label{
+                                        text: "open a folder to begin"
+                                        draw_text +: {color: #x5D6675}
+                                    }
+                                    model_stats := Label{
+                                        text: ""
+                                        draw_text +: {color: #x8D97A9}
+                                    }
+                                }
+
+                                jsec := SolidView{
+                                    width: Fill
+                                    height: Fit
+                                    flow: Right
+                                    align: Align{x: 0.0 y: 0.5}
+                                    padding: Inset{left: 13.0 right: 13.0 top: 8.0 bottom: 6.0}
+                                    spacing: 8.0
+                                    draw_bg +: {color: #x161A22}
+
+                                    jtitle := Label{
+                                        text: "JOINTS"
+                                        draw_text +: {color: #x5D6675}
+                                    }
+                                    unit_btn := Button{text: "rad"}
+                                }
+
+                                joints := mod.widgets.JointPanel{
+                                    width: Fill
+                                    height: Fill
+                                }
+
+                                sfoot := SolidView{
+                                    width: Fill
+                                    height: Fit
+                                    flow: Right
+                                    padding: Inset{left: 13.0 right: 13.0 top: 9.0 bottom: 10.0}
+                                    spacing: 7.0
+                                    draw_bg +: {color: #x161A22}
+                                    reset_pose_btn := Button{text: "Reset pose"}
+                                }
+                            }
+
+                            viewport := mod.widgets.RobotView{
+                                width: Fill
+                                height: Fill
+                                urdf: "data/redbank/redbank_unit.urdf"
+                                assets: "data/redbank"
+                                // studio theme: a tool wants the model to pop off a
+                                // neutral ground, not compete with a bright sky
+                                sky_zenith: #x0F1218
+                                sky_horizon: #x1C212B
+                                ground_color: #x171B22
+                                grid_color: #x39424F
                             }
                         }
 
-                        viewport := mod.widgets.RobotView{
-                            // the library widget starts empty; this demo asks
-                            // for a model declaratively
-                            urdf: "data/redbank/redbank_unit.urdf"
-                            assets: "data/redbank"
+                        // ---------------- status bar ----------------
+                        status := SolidView{
+                            width: Fill
+                            height: 26.0
+                            flow: Right
+                            align: Align{x: 0.0 y: 0.5}
+                            padding: Inset{left: 12.0 right: 12.0}
+                            spacing: 16.0
+                            draw_bg +: {color: #x161A22}
+
+                            status_left := Label{
+                                text: "ready"
+                                draw_text +: {color: #x5D6675}
+                            }
+                            status_fill := View{width: Fill height: 1.0}
+                            status_right := Label{
+                                text: "metres · Z-up"
+                                draw_text +: {color: #x5D6675}
+                            }
                         }
                     }
                 }
@@ -133,6 +232,9 @@ pub struct App {
     /// models discovered by the last folder scan, parallel to the dropdown
     #[rust]
     found: Vec<ModelFile>,
+    /// path of whatever is on screen, for the sidebar
+    #[rust]
+    current_path: String,
 }
 
 impl App {
@@ -140,6 +242,48 @@ impl App {
         // demo of the library's host API: no borrowing, and failures surface
         // as a RobotViewAction in handle_actions below
         let _ = self.ui.robot_view(cx, ids!(viewport)).load_robot(cx, urdf, assets);
+    }
+
+    /// Mirror the loaded model into the sidebar: name, path, counts, joints.
+    fn sync_model_info(&mut self, cx: &mut Cx, links: usize, joints: usize) {
+        let view = self.ui.robot_view(cx, ids!(viewport));
+        let (name, rows) = {
+            let borrowed = view.borrow();
+            match borrowed.as_ref().and_then(|v| v.robot().map(|r| (v, r))) {
+                Some((v, robot)) => {
+                    let rows: Vec<JointRow> = v
+                        .movable_joints()
+                        .iter()
+                        .map(|&ji| {
+                            let j = &robot.joints[ji];
+                            let continuous = !j.limit_upper.is_finite()
+                                || !j.limit_lower.is_finite()
+                                || j.limit_upper <= j.limit_lower;
+                            JointRow {
+                                name: j.name.clone(),
+                                value: j.angle,
+                                lower: if continuous { -3.15 } else { j.limit_lower },
+                                upper: if continuous { 3.15 } else { j.limit_upper },
+                                continuous,
+                            }
+                        })
+                        .collect();
+                    (robot.name.clone(), rows)
+                }
+                None => (String::from("no model"), Vec::new()),
+            }
+        };
+        self.ui.widget(cx, ids!(model_name)).set_text(cx, &name);
+        if !self.current_path.is_empty() {
+            self.ui.widget(cx, ids!(model_path)).set_text(cx, &self.current_path);
+        }
+        self.ui
+            .widget(cx, ids!(model_stats))
+            .set_text(cx, &format!("{links} links · {joints} joints"));
+        self.ui.joint_panel(cx, ids!(joints)).set_joints(cx, rows);
+        self.ui
+            .widget(cx, ids!(status_left))
+            .set_text(cx, &format!("loaded · {links} links"));
     }
 
     /// Lamp on = the sun is drawn in the sky and lights the model. Moving it
@@ -211,6 +355,8 @@ impl App {
         pick.set_labels(cx, labels);
         // open the first one so the folder shows something immediately
         let first = self.found[0].path.to_string_lossy().to_string();
+        self.current_path = first.clone();
+        self.ui.widget(cx, ids!(model_path)).set_text(cx, &first);
         let _ = self.ui.robot_view(cx, ids!(viewport)).open_path(cx, &first);
     }
 }
@@ -225,6 +371,7 @@ impl MatchEvent for App {
                 self.open_folder(cx, &dir);
             } else {
                 // a single file works too
+                self.current_path = dir.clone();
                 let _ = self.ui.robot_view(cx, ids!(viewport)).open_path(cx, &dir);
             }
         }
@@ -242,6 +389,7 @@ impl MatchEvent for App {
             }
         }
         if let Some((urdf, assets)) = load {
+            self.current_path = urdf.to_string();
             self.load_robot(cx, urdf, assets);
         }
         if self.ui.button(cx, ids!(light_btn)).clicked(actions) {
@@ -255,16 +403,66 @@ impl MatchEvent for App {
         if let Some(i) = self.ui.drop_down(cx, ids!(model_pick)).selected(actions) {
             if let Some(model) = self.found.get(i) {
                 let path = model.path.to_string_lossy().to_string();
+                self.current_path = path.clone();
                 let _ = self.ui.robot_view(cx, ids!(viewport)).open_path(cx, &path);
             }
         }
-        // the widget reports load outcomes; a real host would surface these
+        // the widget reports load outcomes; mirror them into the sidebar
         let view = self.ui.robot_view(cx, ids!(viewport));
         if let Some((links, joints)) = view.loaded(actions) {
             log!("app: model loaded — {} links, {} movable joints", links, joints);
+            self.sync_model_info(cx, links, joints);
         }
         if let Some((path, err)) = view.load_failed(actions) {
             error!("app: could not load {}: {}", path, err);
+            self.ui.widget(cx, ids!(model_name)).set_text(cx, "load failed");
+            self.ui.widget(cx, ids!(model_path)).set_text(cx, &path);
+            self.ui.widget(cx, ids!(status_left)).set_text(cx, &format!("error: {err}"));
+        }
+
+        // sidebar -> robot
+        if let Some((index, value)) = self.ui.joint_panel(cx, ids!(joints)).changed(actions) {
+            let view = self.ui.robot_view(cx, ids!(viewport));
+            let mut angles = view.joint_angles();
+            if let Some(slot) = angles.get_mut(index) {
+                *slot = value;
+                view.set_joint_angles(cx, &angles);
+                self.ui.widget(cx, ids!(status_right)).set_text(
+                    cx,
+                    &format!("{:+.3} rad · metres · Z-up", value),
+                );
+            }
+        }
+
+        // view presets
+        for (btn, yaw, pitch) in [
+            ("view_iso", 0.72f32, 0.16f32),
+            ("view_front", 0.0, 0.05),
+            ("view_side", 1.5707, 0.05),
+            ("view_top", 0.0, 1.45),
+        ] {
+            if self.ui.button(cx, &[LiveId::from_str(btn)]).clicked(actions) {
+                self.ui.robot_view(cx, ids!(viewport)).set_view_angles(cx, yaw, pitch);
+            }
+        }
+        if self.ui.button(cx, ids!(reset_btn)).clicked(actions) {
+            self.ui.robot_view(cx, ids!(viewport)).reset_view(cx);
+        }
+        if self.ui.button(cx, ids!(reset_pose_btn)).clicked(actions) {
+            let view = self.ui.robot_view(cx, ids!(viewport));
+            let zeros = vec![0.0f32; view.movable_joint_count()];
+            view.set_joint_angles(cx, &zeros);
+            self.ui.joint_panel(cx, ids!(joints)).set_values(cx, &zeros);
+        }
+        if self.ui.button(cx, ids!(grid_btn)).clicked(actions) {
+            let view = self.ui.robot_view(cx, ids!(viewport));
+            let on = !view.is_grid_visible();
+            view.set_grid_visible(cx, on);
+        }
+        if self.ui.button(cx, ids!(anim_btn)).clicked(actions) {
+            let view = self.ui.robot_view(cx, ids!(viewport));
+            let on = !view.is_animating();
+            view.set_animating(cx, on);
         }
     }
 }

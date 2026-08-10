@@ -20,6 +20,7 @@ use makepad_widgets::*;
 #[cfg(all(feature = "episode", not(target_arch = "wasm32")))]
 pub mod episode;
 pub mod error;
+pub mod joint_panel;
 pub mod mesh;
 pub mod profiling;
 pub mod render;
@@ -29,6 +30,7 @@ pub mod robot_view;
 /// Register this crate's shaders and widgets into the script VM.
 pub fn script_mod(vm: &mut ScriptVm) -> ScriptValue {
     render::draw::script_mod(vm);
+    joint_panel::script_mod(vm);
     render::draw::composite_shader::script_mod(vm);
     robot_view::script_mod(vm)
 }
