@@ -23,6 +23,241 @@ pub struct MeshData {
 }
 
 impl MeshData {
+    /// Parse a Wavefront OBJ. Handles `v`, `vn`, `f` with `v`, `v/vt`,
+    /// `v//vn` and `v/vt/vn` forms, negative (relative) indices, and polygons
+    /// with more than three sides (fan-triangulated). Materials, texture
+    /// coordinates and smoothing groups are ignored — this is a geometry
+    /// loader, and the viewer shades from the URDF material.
+    ///
+    /// Faces with no normal get a generated flat one.
+    pub fn from_obj_str(text: &str) -> Result<Self, String> {
+        let mut positions: Vec<[f32; 3]> = Vec::new();
+        let mut normals: Vec<[f32; 3]> = Vec::new();
+        let mut mesh = MeshData::default();
+
+        // OBJ indices are 1-based; negative counts back from the end
+        fn resolve(raw: i32, len: usize) -> Option<usize> {
+            if raw > 0 {
+                let i = (raw - 1) as usize;
+                (i < len).then_some(i)
+            } else if raw < 0 {
+                len.checked_sub((-raw) as usize)
+            } else {
+                None
+            }
+        }
+
+        for line in text.lines() {
+            let line = line.trim();
+            let mut parts = line.split_whitespace();
+            match parts.next() {
+                Some("v") => {
+                    let v: Vec<f32> = parts.filter_map(|p| p.parse().ok()).collect();
+                    if v.len() < 3 {
+                        return Err("OBJ: malformed vertex".to_string());
+                    }
+                    positions.push([v[0], v[1], v[2]]);
+                }
+                Some("vn") => {
+                    let v: Vec<f32> = parts.filter_map(|p| p.parse().ok()).collect();
+                    if v.len() >= 3 {
+                        normals.push([v[0], v[1], v[2]]);
+                    }
+                }
+                Some("f") => {
+                    // each corner: v | v/vt | v//vn | v/vt/vn
+                    let corners: Vec<(usize, Option<usize>)> = parts
+                        .filter_map(|tok| {
+                            let mut it = tok.split('/');
+                            let vi: i32 = it.next()?.parse().ok()?;
+                            let _vt = it.next();
+                            let ni = it.next().and_then(|n| n.parse::<i32>().ok());
+                            let v = resolve(vi, positions.len())?;
+                            let n = ni.and_then(|n| resolve(n, normals.len()));
+                            Some((v, n))
+                        })
+                        .collect();
+                    if corners.len() < 3 {
+                        continue;
+                    }
+                    // fan-triangulate n-gons
+                    for k in 1..corners.len() - 1 {
+                        let tri = [corners[0], corners[k], corners[k + 1]];
+                        let flat = {
+                            let (a, b, c) = (
+                                positions[tri[0].0],
+                                positions[tri[1].0],
+                                positions[tri[2].0],
+                            );
+                            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                            let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                            let n = [
+                                u[1] * v[2] - u[2] * v[1],
+                                u[2] * v[0] - u[0] * v[2],
+                                u[0] * v[1] - u[1] * v[0],
+                            ];
+                            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                            if len > 1e-12 {
+                                [n[0] / len, n[1] / len, n[2] / len]
+                            } else {
+                                [0.0, 0.0, 1.0]
+                            }
+                        };
+                        for (vi, ni) in tri {
+                            let normal = ni.map(|i| normals[i]).unwrap_or(flat);
+                            mesh.push_vertex(positions[vi], normal, 0.0);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if mesh.vertices.is_empty() {
+            return Err("OBJ contained no faces".to_string());
+        }
+        mesh.indices = (0..(mesh.vertices.len() / FLOATS_PER_VERTEX) as u32).collect();
+        mesh.recompute_bounds();
+        Ok(mesh)
+    }
+
+    /// Recompute `bounds_min`/`bounds_max` from the current vertices.
+    pub fn recompute_bounds(&mut self) {
+        let mut min = [f32::MAX; 3];
+        let mut max = [f32::MIN; 3];
+        for v in self.vertices.chunks(FLOATS_PER_VERTEX) {
+            for i in 0..3 {
+                min[i] = min[i].min(v[i]);
+                max[i] = max[i].max(v[i]);
+            }
+        }
+        if self.vertices.is_empty() {
+            min = [0.0; 3];
+            max = [0.0; 3];
+        }
+        self.bounds_min = min;
+        self.bounds_max = max;
+    }
+
+    /// URDF `<box size="x y z">`: axis-aligned, centred on the link origin.
+    ///
+    /// The primitive generators below build geometry in URDF's own frame
+    /// (Z up, centred at the origin) — unlike the older Y-up helpers in this
+    /// file, which exist for the viewer's own scenery.
+    pub fn urdf_box(sx: f32, sy: f32, sz: f32) -> Self {
+        let (hx, hy, hz) = (sx * 0.5, sy * 0.5, sz * 0.5);
+        let mut mesh = MeshData {
+            bounds_min: [-hx, -hy, -hz],
+            bounds_max: [hx, hy, hz],
+            ..Default::default()
+        };
+        // (normal, four corners ccw seen from outside)
+        let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
+            ([0.0, 0.0, 1.0],  [[-hx, -hy, hz], [hx, -hy, hz], [hx, hy, hz], [-hx, hy, hz]]),
+            ([0.0, 0.0, -1.0], [[hx, -hy, -hz], [-hx, -hy, -hz], [-hx, hy, -hz], [hx, hy, -hz]]),
+            ([1.0, 0.0, 0.0],  [[hx, -hy, hz], [hx, -hy, -hz], [hx, hy, -hz], [hx, hy, hz]]),
+            ([-1.0, 0.0, 0.0], [[-hx, -hy, -hz], [-hx, -hy, hz], [-hx, hy, hz], [-hx, hy, -hz]]),
+            ([0.0, 1.0, 0.0],  [[-hx, hy, hz], [hx, hy, hz], [hx, hy, -hz], [-hx, hy, -hz]]),
+            ([0.0, -1.0, 0.0], [[-hx, -hy, -hz], [hx, -hy, -hz], [hx, -hy, hz], [-hx, -hy, hz]]),
+        ];
+        for (id, (normal, quad)) in faces.iter().enumerate() {
+            for &[a, b, c] in &[[0usize, 1, 2], [0, 2, 3]] {
+                for &corner in &[quad[a], quad[b], quad[c]] {
+                    mesh.push_vertex(corner, *normal, id as f32);
+                }
+            }
+        }
+        mesh.indices = (0..(mesh.vertices.len() / FLOATS_PER_VERTEX) as u32).collect();
+        mesh
+    }
+
+    /// URDF `<cylinder radius="r" length="l">`: **Z axis**, centred on the
+    /// link origin (URDF's convention, not the Y-up `cylinder()` above).
+    pub fn urdf_cylinder(radius: f32, length: f32, segments: usize) -> Self {
+        let segments = segments.max(3);
+        let hz = length * 0.5;
+        let mut mesh = MeshData {
+            bounds_min: [-radius, -radius, -hz],
+            bounds_max: [radius, radius, hz],
+            ..Default::default()
+        };
+        let at = |i: usize| {
+            let a = (i as f32 / segments as f32) * std::f32::consts::TAU;
+            (radius * a.cos(), radius * a.sin(), a.cos(), a.sin())
+        };
+        for i in 0..segments {
+            let (x0, y0, nx0, ny0) = at(i);
+            let (x1, y1, nx1, ny1) = at(i + 1);
+            let n0 = [nx0, ny0, 0.0];
+            let n1 = [nx1, ny1, 0.0];
+            // side
+            mesh.push_vertex([x0, y0, -hz], n0, 0.0);
+            mesh.push_vertex([x1, y1, -hz], n1, 0.0);
+            mesh.push_vertex([x1, y1, hz], n1, 0.0);
+            mesh.push_vertex([x0, y0, -hz], n0, 0.0);
+            mesh.push_vertex([x1, y1, hz], n1, 0.0);
+            mesh.push_vertex([x0, y0, hz], n0, 0.0);
+            // caps
+            let up = [0.0, 0.0, 1.0];
+            let down = [0.0, 0.0, -1.0];
+            mesh.push_vertex([0.0, 0.0, hz], up, 1.0);
+            mesh.push_vertex([x0, y0, hz], up, 1.0);
+            mesh.push_vertex([x1, y1, hz], up, 1.0);
+            mesh.push_vertex([0.0, 0.0, -hz], down, 2.0);
+            mesh.push_vertex([x1, y1, -hz], down, 2.0);
+            mesh.push_vertex([x0, y0, -hz], down, 2.0);
+        }
+        mesh.indices = (0..(mesh.vertices.len() / FLOATS_PER_VERTEX) as u32).collect();
+        mesh
+    }
+
+    /// URDF `<sphere radius="r">`, centred on the link origin.
+    pub fn urdf_sphere(radius: f32, rings: usize, segments: usize) -> Self {
+        let rings = rings.max(2);
+        let segments = segments.max(3);
+        let mut mesh = MeshData {
+            bounds_min: [-radius; 3],
+            bounds_max: [radius; 3],
+            ..Default::default()
+        };
+        let point = |ring: usize, seg: usize| {
+            let phi = (ring as f32 / rings as f32) * std::f32::consts::PI; // 0..pi from +Z
+            let theta = (seg as f32 / segments as f32) * std::f32::consts::TAU;
+            let n = [phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos()];
+            ([n[0] * radius, n[1] * radius, n[2] * radius], n)
+        };
+        for r in 0..rings {
+            for sgm in 0..segments {
+                let (p00, n00) = point(r, sgm);
+                let (p01, n01) = point(r, sgm + 1);
+                let (p10, n10) = point(r + 1, sgm);
+                let (p11, n11) = point(r + 1, sgm + 1);
+                // skip the degenerate triangle at each pole
+                if r > 0 {
+                    mesh.push_vertex(p00, n00, 0.0);
+                    mesh.push_vertex(p10, n10, 0.0);
+                    mesh.push_vertex(p01, n01, 0.0);
+                }
+                if r + 1 < rings {
+                    mesh.push_vertex(p01, n01, 0.0);
+                    mesh.push_vertex(p10, n10, 0.0);
+                    mesh.push_vertex(p11, n11, 0.0);
+                }
+            }
+        }
+        mesh.indices = (0..(mesh.vertices.len() / FLOATS_PER_VERTEX) as u32).collect();
+        mesh
+    }
+
+    /// Append one interleaved vertex: pos(3), id(1), normal(3), uv(2).
+    fn push_vertex(&mut self, pos: [f32; 3], normal: [f32; 3], id: f32) {
+        self.vertices.extend_from_slice(&pos);
+        self.vertices.push(id);
+        self.vertices.extend_from_slice(&normal);
+        self.vertices.push(0.0);
+        self.vertices.push(0.0);
+    }
+
     /// Load mesh from STL file
     pub fn from_stl<P: AsRef<Path>>(path: P) -> Result<Self, String> {
         let file = File::open(path.as_ref())

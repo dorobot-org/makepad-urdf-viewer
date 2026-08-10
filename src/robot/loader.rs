@@ -96,6 +96,39 @@ fn build_robot_from_urdf(urdf: &urdf_rs::Robot, assets_base: &str) -> LoadResult
                 }
             }
 
+            // Primitives are built procedurally; only meshes hit the disk.
+            let primitive = match &visual.geometry {
+                urdf_rs::Geometry::Box { size } => Some(MeshData::urdf_box(
+                    size[0] as f32,
+                    size[1] as f32,
+                    size[2] as f32,
+                )),
+                urdf_rs::Geometry::Cylinder { radius, length } => Some(
+                    MeshData::urdf_cylinder(*radius as f32, *length as f32, 32),
+                ),
+                urdf_rs::Geometry::Sphere { radius } => {
+                    Some(MeshData::urdf_sphere(*radius as f32, 16, 32))
+                }
+                // urdf-rs also models Capsule; approximate it with a cylinder
+                // rather than dropping the link entirely.
+                urdf_rs::Geometry::Capsule { radius, length } => Some(
+                    MeshData::urdf_cylinder(*radius as f32, *length as f32, 32),
+                ),
+                urdf_rs::Geometry::Mesh { .. } => None,
+            };
+            if let Some(mut mesh) = primitive {
+                apply_visual_origin(&mut mesh, visual);
+                let b = (
+                    glam::Vec3::from(mesh.bounds_min),
+                    glam::Vec3::from(mesh.bounds_max),
+                );
+                for i in 0..3 {
+                    bounds_min[i] = bounds_min[i].min(b.0[i]);
+                    bounds_max[i] = bounds_max[i].max(b.1[i]);
+                }
+                link_meshes.push(mesh);
+            }
+
             if let urdf_rs::Geometry::Mesh { filename, scale } = &visual.geometry {
                 match load_mesh_for_visual(filename, scale, visual, assets_base) {
                     Ok((mesh, updated_bounds)) => {
@@ -204,48 +237,68 @@ fn build_robot_from_urdf(urdf: &urdf_rs::Robot, assets_base: &str) -> LoadResult
 }
 
 /// Load mesh for a visual element
-fn load_mesh_for_visual(
-    filename: &str,
-    scale: &Option<urdf_rs::Vec3>,
-    visual: &urdf_rs::Visual,
-    assets_base: &str,
-) -> Result<(MeshData, (glam::Vec3, glam::Vec3)), String> {
-    // Try full relative path first, then fall back to just filename
-    let full_path = format!("{}/{}", assets_base, filename);
-    let filename_only = Path::new(filename)
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or(filename);
-    let fallback_path = format!("{}/{}", assets_base, filename_only);
-
-    let mesh_path = if Path::new(&full_path).exists() {
-        full_path
-    } else {
-        fallback_path
-    };
-
-    let mut mesh = match virtual_asset(filename_only) {
-        Some(bytes) => MeshData::from_stl_bytes(bytes)?,
-        None => MeshData::from_stl(&mesh_path)?,
-    };
-
-    // Debug: print mesh bounds before scaling
-    eprintln!("=== Mesh {}: bounds before scale: {:?} to {:?}", filename, mesh.bounds_min, mesh.bounds_max);
-
-    // Apply mesh scale if specified in URDF
-    if let Some(s) = scale {
-        let scale_x = s.0[0] as f32;
-        let scale_y = s.0[1] as f32;
-        let scale_z = s.0[2] as f32;
-        let uniform_scale = (scale_x + scale_y + scale_z) / 3.0;
-        eprintln!("=== Applying scale: {} (from {:?})", uniform_scale, s);
-        if (uniform_scale - 1.0).abs() > 0.001 {
-            mesh.apply_scale(uniform_scale);
-            eprintln!("=== Mesh {}: bounds after scale: {:?} to {:?}", filename, mesh.bounds_min, mesh.bounds_max);
-        }
+/// `package://pkg/rel/path.stl` -> `rel/path.stl`, `file:///a/b.stl` -> `/a/b.stl`.
+/// Anything else is returned unchanged.
+///
+/// The package name is dropped rather than resolved: without a ROS
+/// environment there is nowhere to look it up, and the caller's assets
+/// directory is the stand-in for the package root.
+fn strip_uri_scheme(filename: &str) -> &str {
+    if let Some(rest) = filename.strip_prefix("package://") {
+        // drop the package name, keep the path inside it
+        return rest.split_once('/').map(|(_pkg, path)| path).unwrap_or(rest);
     }
+    if let Some(rest) = filename.strip_prefix("model://") {
+        return rest.split_once('/').map(|(_pkg, path)| path).unwrap_or(rest);
+    }
+    if let Some(rest) = filename.strip_prefix("file://") {
+        return rest;
+    }
+    filename
+}
 
-    // Apply visual origin transform
+/// Pick a mesh parser by file extension. STL (binary or ASCII) and OBJ are
+/// supported; COLLADA/.dae is not, and reports that plainly instead of
+/// failing as a corrupt STL.
+fn mesh_from_path(path: &str) -> Result<MeshData, String> {
+    match extension_of(path).as_deref() {
+        Some("obj") => {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| format!("Failed to open OBJ file: {}", e))?;
+            MeshData::from_obj_str(&text)
+        }
+        Some("dae") => Err(format!(
+            "COLLADA (.dae) meshes are not supported; convert {} to STL or OBJ",
+            path
+        )),
+        _ => MeshData::from_stl(path),
+    }
+}
+
+fn mesh_from_bytes(name: &str, bytes: &[u8]) -> Result<MeshData, String> {
+    match extension_of(name).as_deref() {
+        Some("obj") => {
+            let text = std::str::from_utf8(bytes).map_err(|e| format!("OBJ not utf8: {}", e))?;
+            MeshData::from_obj_str(text)
+        }
+        Some("dae") => Err(format!(
+            "COLLADA (.dae) meshes are not supported; convert {} to STL or OBJ",
+            name
+        )),
+        _ => MeshData::from_stl_bytes(bytes),
+    }
+}
+
+fn extension_of(path: &str) -> Option<String> {
+    Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+}
+
+/// Place a visual's geometry by its `<origin>`. Applies to procedural
+/// primitives and loaded meshes alike, so both land in the same place.
+fn apply_visual_origin(mesh: &mut MeshData, visual: &urdf_rs::Visual) {
     let vis_xyz = glam::Vec3::new(
         visual.origin.xyz.0[0] as f32,
         visual.origin.xyz.0[1] as f32,
@@ -265,6 +318,54 @@ fn load_mesh_for_visual(
         let vis_transform = glam::Mat4::from_rotation_translation(vis_rot, vis_xyz);
         mesh.apply_transform(&vis_transform.to_cols_array());
     }
+}
+
+fn load_mesh_for_visual(
+    filename: &str,
+    scale: &Option<urdf_rs::Vec3>,
+    visual: &urdf_rs::Visual,
+    assets_base: &str,
+) -> Result<(MeshData, (glam::Vec3, glam::Vec3)), String> {
+    // ROS URDFs address meshes as package://<pkg>/rel/path.stl (and some use
+    // file://). Strip the scheme so the remainder can be resolved against the
+    // caller's assets directory.
+    let relative = strip_uri_scheme(filename);
+
+    let full_path = format!("{}/{}", assets_base, relative);
+    let filename_only = Path::new(relative)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or(relative);
+    let fallback_path = format!("{}/{}", assets_base, filename_only);
+
+    let mesh_path = if Path::new(&full_path).exists() {
+        full_path
+    } else {
+        fallback_path
+    };
+
+    let mut mesh = match virtual_asset(filename_only) {
+        Some(bytes) => mesh_from_bytes(filename_only, bytes)?,
+        None => mesh_from_path(&mesh_path)?,
+    };
+
+    // Debug: print mesh bounds before scaling
+    eprintln!("=== Mesh {}: bounds before scale: {:?} to {:?}", filename, mesh.bounds_min, mesh.bounds_max);
+
+    // Apply mesh scale if specified in URDF
+    if let Some(s) = scale {
+        let scale_x = s.0[0] as f32;
+        let scale_y = s.0[1] as f32;
+        let scale_z = s.0[2] as f32;
+        let uniform_scale = (scale_x + scale_y + scale_z) / 3.0;
+        eprintln!("=== Applying scale: {} (from {:?})", uniform_scale, s);
+        if (uniform_scale - 1.0).abs() > 0.001 {
+            mesh.apply_scale(uniform_scale);
+            eprintln!("=== Mesh {}: bounds after scale: {:?} to {:?}", filename, mesh.bounds_min, mesh.bounds_max);
+        }
+    }
+
+    apply_visual_origin(&mut mesh, visual);
 
     let bounds = (
         glam::Vec3::from_array(mesh.bounds_min),

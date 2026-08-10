@@ -10,7 +10,9 @@ Runs on desktop (Metal/OpenGL) and in the browser (WebAssembly/WebGL).
 
 ## Features
 
-- **URDF + STL loading**, with a visible fallback when a mesh is missing
+- **Loads real-world URDF**: STL and OBJ meshes, `<box>`/`<cylinder>`/`<sphere>`
+  primitives, and ROS `package://` paths, with a visible marker when a mesh
+  is missing
 - **Forward kinematics** for revolute, continuous and fixed joints
 - **Orbit / pan / zoom camera** that pivots on the model, with near-vertical pitch
 - **Joint control** from the host (`set_joint_angles`) or the keyboard
@@ -173,12 +175,24 @@ viewer.load_robot(cx, "data/so100.urdf", "data")?;
 viewer.load_robot(cx, "so100.urdf", "embedded")?;   // see below
 ```
 
-Each `<mesh filename="...">` resolves in this order:
+`<geometry>` may be a mesh or a primitive. `<box>`, `<cylinder>`, `<sphere>`
+and `<capsule>` are generated procedurally — no asset files needed. URDF's
+conventions are followed: primitives are centred on the link origin and
+cylinders run along **Z**.
 
-1. the **virtual asset registry**, keyed by *basename* — always consulted
+Meshes may be **`.stl`** (binary or ASCII) or **`.obj`**. `.dae`/COLLADA is
+not supported and says so rather than failing as a corrupt STL.
+
+A `<mesh filename="...">` resolves in this order:
+
+1. the URI scheme is stripped: `package://pkg/rel/x.stl` → `rel/x.stl`
+   (the package name is dropped — without a ROS environment there is nothing
+   to resolve it against, so your assets directory stands in for the package
+   root). `model://` and `file://` are handled the same way;
+2. the **virtual asset registry**, keyed by *basename* — always consulted
    first, on every platform;
-2. `assets_dir/<filename>` on disk, if it exists;
-3. `assets_dir/<basename>` on disk.
+3. `assets_dir/<remaining path>` on disk, if it exists;
+4. `assets_dir/<basename>` on disk.
 
 `"embedded"` is a **convention, not a keyword**: the loader does not
 special-case it. It is simply a directory name that will never exist, so
@@ -450,7 +464,7 @@ src/
 ├── profiling.rs
 ├── robot/
 │   ├── model.rs     # Robot / Link / Joint, bounds, joint setters
-│   ├── loader.rs    # URDF + STL loading, virtual asset registry
+│   ├── loader.rs    # URDF parsing, mesh/primitive loading, asset registry
 │   └── kinematics.rs
 └── render/
     ├── mesh.rs
@@ -463,11 +477,31 @@ tests/               # headless load + framing checks
 
 ## Adding your own robot
 
-1. Put the URDF and its STLs anywhere on disk.
+1. Put the URDF and its meshes anywhere on disk.
 2. `viewer.load_robot(cx, "path/to/robot.urdf", "path/to/assets")`.
 
 Mesh paths inside the URDF resolve against the assets directory, by basename if
 an exact path miss occurs. `scale` on `<mesh>` is honoured.
+
+## What is and isn't supported
+
+| | |
+|---|---|
+| Geometry | `<mesh>` (STL, OBJ), `<box>`, `<cylinder>`, `<sphere>`, `<capsule>` |
+| Not supported | COLLADA `.dae` meshes — convert to STL/OBJ |
+| Joints driven | `revolute`, `continuous` |
+| Joints honoured, not driven | `fixed`; `prismatic` parses but does not translate |
+| Degraded | `planar`, `floating` → treated as `fixed`, with a warning |
+| Paths | plain relative, `package://`, `model://`, `file://` |
+| Also read | `<material><color>`, `<mesh scale>`, `<visual><origin>` |
+| Ignored | textures, `<collision>`, `<inertial>`, `<transmission>`, `<gazebo>` |
+
+Input must be **plain URDF**. `.xacro` files need expanding first
+(`xacro robot.xacro > robot.urdf`).
+
+Anything unsupported degrades rather than failing the load: an unreadable mesh
+becomes a small marker cube and the link stays in the tree, so a partially
+supported robot still shows its kinematics.
 
 ## Notes for integrators
 
@@ -485,7 +519,7 @@ an exact path miss occurs. `scale` on `<mesh>` is honoured.
 | makepad-widgets / makepad-xr | UI framework, GPU rendering, camera |
 | [urdf-rs](https://crates.io/crates/urdf-rs) | URDF parsing |
 | [glam](https://crates.io/crates/glam) | Linear algebra |
-| [stl_io](https://crates.io/crates/stl_io) | STL loading |
+| [stl_io](https://crates.io/crates/stl_io) | STL loading (OBJ and primitives are built in) |
 | [parquet](https://crates.io/crates/parquet) / arrow | Episode playback (optional) |
 
 ## License
