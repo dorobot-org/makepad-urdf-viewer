@@ -7,7 +7,7 @@ pub use makepad_urdf_player;
 pub use makepad_widgets;
 pub use makepad_xr;
 
-use makepad_urdf_player::robot_view::RobotView;
+use makepad_urdf_player::robot_view::RobotViewWidgetRefExt;
 use makepad_widgets::*;
 
 app_main!(App);
@@ -50,7 +50,12 @@ script_mod! {
                             }
                         }
 
-                        viewport := mod.widgets.RobotView{}
+                        viewport := mod.widgets.RobotView{
+                            // the library widget starts empty; this demo asks
+                            // for a model declaratively
+                            urdf: "data/redbank/redbank_unit.urdf"
+                            assets: "data/redbank"
+                        }
                     }
                 }
             }
@@ -130,33 +135,24 @@ pub struct App {
 
 impl App {
     fn load_robot(&mut self, cx: &mut Cx, urdf: &str, assets: &str) {
-        let viewport = self.ui.widget(cx, ids!(viewport));
-        if let Some(mut robot_view) = viewport.borrow_mut::<RobotView>() {
-            robot_view.load_robot(urdf, assets);
-        }
-        viewport.redraw(cx);
+        // demo of the library's host API: no borrowing, and failures surface
+        // as a RobotViewAction in handle_actions below
+        let _ = self.ui.robot_view(cx, ids!(viewport)).load_robot(cx, urdf, assets);
     }
 
     /// Lamp on = the sun is drawn in the sky and lights the model. Moving it
     /// is alt+drag, so orbit / pan / joint keys are unaffected either way.
     fn toggle_light(&mut self, cx: &mut Cx) {
-        let viewport = self.ui.widget(cx, ids!(viewport));
-        if let Some(mut robot_view) = viewport.borrow_mut::<RobotView>() {
-            let on = !robot_view.is_light_on();
-            robot_view.set_light_on(cx, on);
-        }
+        let view = self.ui.robot_view(cx, ids!(viewport));
+        let on = !view.is_light_on();
+        view.set_light_on(cx, on);
         self.sync_light_label(cx);
-        viewport.redraw(cx);
     }
 
     /// The widget also switches the lamp on by itself (alt+drag) — keep the
     /// button label in step with it.
     fn sync_light_label(&mut self, cx: &mut Cx) {
-        let viewport = self.ui.widget(cx, ids!(viewport));
-        let on = viewport
-            .borrow::<RobotView>()
-            .map(|v| v.is_light_on())
-            .unwrap_or(false);
+        let on = self.ui.robot_view(cx, ids!(viewport)).is_light_on();
         if on != self.light_label_on {
             self.light_label_on = on;
             let label = if on { "Light: on" } else { "Light: off" };
@@ -182,6 +178,14 @@ impl MatchEvent for App {
         }
         if self.ui.button(cx, ids!(light_btn)).clicked(actions) {
             self.toggle_light(cx);
+        }
+        // the widget reports load outcomes; a real host would surface these
+        let view = self.ui.robot_view(cx, ids!(viewport));
+        if let Some((links, joints)) = view.loaded(actions) {
+            log!("app: model loaded — {} links, {} movable joints", links, joints);
+        }
+        if let Some((path, err)) = view.load_failed(actions) {
+            error!("app: could not load {}: {}", path, err);
         }
     }
 }

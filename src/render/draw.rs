@@ -206,9 +206,9 @@ script_mod! {
             let hz = clamp(1.0 - smoothstep(0.006, 0.060, haze_h / dist), 0.0, 1.0)
             // premultiplied output for makepad's ONE / ONE_MINUS_SRC_ALPHA blend
             return vec4(
-                mix(1.000 * soil_a + 0.42 * line_a, 1.000 * alpha, hz),
-                mix(1.000 * soil_a + 0.41 * line_a, 0.985 * alpha, hz),
-                mix(0.773 * soil_a + 0.24 * line_a, 0.985 * alpha, hz),
+                mix(self.soil_color.x * soil_a + self.color.x * line_a, 1.000 * alpha, hz),
+                mix(self.soil_color.y * soil_a + self.color.y * line_a, 0.985 * alpha, hz),
+                mix(self.soil_color.z * soil_a + self.color.z * line_a, 0.985 * alpha, hz),
                 alpha
             )
         }
@@ -256,21 +256,25 @@ pub mod composite_shader {
                 // soft peach-pink towards the zenith
                 // the default framing only shows ~5 deg of sky, so the whole
                 // white -> pale yellow -> peach-pink ramp lives near the horizon
-                // no yellow in the sky: near-white at the horizon lifting into
-                // a soft peach-pink, nothing more
+                // host-themed: near-white at the horizon lifting to the zenith
+                // tint. The whole ramp lives low because the default framing
+                // only exposes a few degrees of sky.
                 let sky = mix(
-                    vec3(1.00, 0.985, 0.985),
-                    vec3(0.98, 0.895, 0.905),
+                    self.sky_horizon.xyz,
+                    self.sky_zenith.xyz,
                     smoothstep(0.0, 0.10, up)
                 )
                 // the ground below, hazing into the sky as it approaches the
                 // horizon — without this the pale yellow meets the pink sky as
                 // a hard saturated band
                 let down = clamp(-t, 0.0, 1.0)
-                let earth0 = mix(vec3(1.00, 1.00, 0.773), vec3(0.88, 0.88, 0.65),
-                                 smoothstep(0.0, 0.75, down))
+                let earth0 = mix(
+                    self.ground_color.xyz,
+                    self.ground_color.xyz * 0.88,
+                    smoothstep(0.0, 0.75, down)
+                )
                 let ground_haze = 1.0 - smoothstep(0.006, 0.060, down)
-                let earth = mix(earth0, vec3(1.00, 0.985, 0.985), ground_haze)
+                let earth = mix(earth0, self.sky_horizon.xyz, ground_haze)
                 let glow = pow(1.0 - min(abs(t) * 26.0, 1.0), 3.0)
                 let bg0 = mix(earth, sky, smoothstep(-0.010, 0.010, t))
                     + vec3(0.22, 0.20, 0.21) * glow * 0.07
@@ -317,21 +321,25 @@ pub mod composite_shader {
                 // soft peach-pink towards the zenith
                 // the default framing only shows ~5 deg of sky, so the whole
                 // white -> pale yellow -> peach-pink ramp lives near the horizon
-                // no yellow in the sky: near-white at the horizon lifting into
-                // a soft peach-pink, nothing more
+                // host-themed: near-white at the horizon lifting to the zenith
+                // tint. The whole ramp lives low because the default framing
+                // only exposes a few degrees of sky.
                 let sky = mix(
-                    vec3(1.00, 0.985, 0.985),
-                    vec3(0.98, 0.895, 0.905),
+                    self.sky_horizon.xyz,
+                    self.sky_zenith.xyz,
                     smoothstep(0.0, 0.10, up)
                 )
                 // the ground below, hazing into the sky as it approaches the
                 // horizon — without this the pale yellow meets the pink sky as
                 // a hard saturated band
                 let down = clamp(-t, 0.0, 1.0)
-                let earth0 = mix(vec3(1.00, 1.00, 0.773), vec3(0.88, 0.88, 0.65),
-                                 smoothstep(0.0, 0.75, down))
+                let earth0 = mix(
+                    self.ground_color.xyz,
+                    self.ground_color.xyz * 0.88,
+                    smoothstep(0.0, 0.75, down)
+                )
                 let ground_haze = 1.0 - smoothstep(0.006, 0.060, down)
-                let earth = mix(earth0, vec3(1.00, 0.985, 0.985), ground_haze)
+                let earth = mix(earth0, self.sky_horizon.xyz, ground_haze)
                 let glow = pow(1.0 - min(abs(t) * 26.0, 1.0), 3.0)
                 let bg0 = mix(earth, sky, smoothstep(-0.010, 0.010, t))
                     + vec3(0.22, 0.20, 0.21) * glow * 0.07
@@ -358,12 +366,16 @@ pub mod composite_shader {
 pub struct DrawGridPlane {
     #[deref]
     pub draw_vars: DrawVars,
-    #[live(vec4(0.92, 0.66, 0.44, 1.0))]
+    /// grid line colour
+    #[live(vec4(0.42, 0.41, 0.24, 1.0))]
     pub color: Vec4f,
     #[live(2.0)]
     pub extent: f32,
     #[live(0.05)]
     pub spacing: f32,
+    /// ground fill colour (the grid lines use `color`)
+    #[live(vec4(1.0, 1.0, 0.773, 1.0))]
+    pub soil_color: Vec4f,
     #[live(0.0)]
     pub plane_y: f32,
     /// world size of one screen pixel per unit of distance:
@@ -401,6 +413,15 @@ pub struct DrawSceneComposite {
     /// xyz = direction towards the lamp, w = lamp switched on (0/1)
     #[live(vec4(-0.35, 0.84, 0.42, 0.0))]
     pub light_dir: Vec4f,
+    /// sky colour at the horizon (also what the ground hazes into)
+    #[live(vec4(1.0, 0.985, 0.985, 1.0))]
+    pub sky_horizon: Vec4f,
+    /// sky colour towards the zenith
+    #[live(vec4(0.98, 0.895, 0.905, 1.0))]
+    pub sky_zenith: Vec4f,
+    /// ground colour below the horizon
+    #[live(vec4(1.0, 1.0, 0.773, 1.0))]
+    pub ground_color: Vec4f,
 }
 
 impl DrawSceneComposite {
