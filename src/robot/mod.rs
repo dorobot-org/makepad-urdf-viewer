@@ -17,5 +17,8 @@ mod loader;
 mod kinematics;
 
 pub use model::{Robot, RobotLink, RobotJoint, JointType};
-pub use loader::{load_robot, load_robot_from_string, set_virtual_assets, validate_robot, LoadResult};
+pub use loader::{
+    load_any, load_mesh_as_robot, load_robot, load_robot_from_string, scan_folder,
+    set_virtual_assets, validate_robot, LoadResult, ModelFile, ModelKind,
+};
 pub use kinematics::{ForwardKinematics, ForwardKinematicsMethods};

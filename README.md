@@ -34,9 +34,14 @@ Runs on desktop (Metal/OpenGL) and in the browser (WebAssembly/WebGL).
 ## Quick start
 
 ```bash
-cargo run --release                 # demo app: Redbank III unit, 4x8 array, SO-100
+cargo run --release                          # demo app: bundled models
+cargo run --release -- ~/robots              # open a folder of models
+cargo run --release -- ~/robots/arm.urdf     # or a single file
 cargo run --release --example embed -- data/so100.urdf data
 ```
+
+The demo's **Open folder…** button scans a folder for `.urdf`, `.stl` and
+`.obj` and lists what it finds in a dropdown.
 
 ## Controls
 
@@ -162,6 +167,40 @@ default (`joint_angles()` → empty, `is_light_on()` → `false`) and every sett
 is a no-op. Only `load_robot` reports it, as `Err("RobotView not found")`.
 
 ---
+
+### Opening a folder
+
+To let a user browse models rather than hard-coding a path:
+
+```rust
+use makepad_urdf_player::robot::{scan_folder, ModelKind};
+
+let found = scan_folder("/path/to/models", 2);   // 2 = subdirectory depth
+for m in &found {
+    println!("{} ({:?})", m.relative, m.kind);
+}
+viewer.open_path(cx, &found[0].path.to_string_lossy())?;
+```
+
+`scan_folder` returns `Vec<ModelFile>` — `path`, `name`, `relative` (for
+display) and `kind` (`Urdf` or `Mesh`) — sorted URDFs first, then by name.
+
+It deliberately **omits a robot's own part meshes**: a mesh sitting next to a
+URDF, or inside a `meshes`/`mesh`/`visual`/`collision` subdirectory of one, is
+treated as that robot's geometry rather than a model in its own right.
+Otherwise opening a robot folder buries the single URDF under fifty STLs.
+Meshes anywhere else are listed normally, so a folder of loose OBJs works.
+`.git`, `target` and `node_modules` are skipped.
+
+#### `open_path(&self, cx, path: &str) -> Result<(), String>`
+
+Open a `.urdf`, `.stl` or `.obj` by path, choosing the loader by extension.
+Assets resolve against the file's own folder, so this is the natural entry
+point for "the user picked a file".
+
+A **bare mesh becomes a single fixed link**, which is what makes mesh-only
+folders viewable — there is no URDF involved, and `movable_joint_count()` is
+zero.
 
 ### Loading models
 

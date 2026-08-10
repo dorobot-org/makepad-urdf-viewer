@@ -1,12 +1,15 @@
 // compile-only check that the README's documented API exists as written
 #![allow(unused)]
 use makepad_urdf_player::robot_view::{RobotViewAction, RobotViewRef, RobotViewWidgetRefExt};
-use makepad_urdf_player::robot::{load_robot, set_virtual_assets, ForwardKinematics, Robot};
+use makepad_urdf_player::robot::{
+    load_any, load_robot, scan_folder, set_virtual_assets, ForwardKinematics, ModelFile, Robot,
+};
 use makepad_widgets::*;
 
 fn api(cx: &mut Cx, ui: &WidgetRef, actions: &Actions) {
     let viewer: RobotViewRef = ui.robot_view(cx, ids!(viewer));
     let _: Result<(), String> = viewer.load_robot(cx, "a.urdf", "data");
+    let _: Result<(), String> = viewer.open_path(cx, "a.obj");
     viewer.clear_robot(cx);
     let _: Option<(usize, usize)> = viewer.loaded(actions);
     let _: Option<(String, String)> = viewer.load_failed(actions);
@@ -30,6 +33,13 @@ fn api(cx: &mut Cx, ui: &WidgetRef, actions: &Actions) {
         let _: (f32, f32) = inner.light_angles();
     }
     drop(borrowed);
+}
+
+fn folder_api() {
+    let found: Vec<ModelFile> = scan_folder("data", 2);
+    if let Some(first) = found.first() {
+        let _ = load_any(&first.path);
+    }
 }
 
 fn model_api() -> Result<(), Box<dyn std::error::Error>> {

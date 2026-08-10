@@ -7,6 +7,7 @@ pub use makepad_urdf_player;
 pub use makepad_widgets;
 pub use makepad_xr;
 
+use makepad_urdf_player::robot::{scan_folder, ModelFile, ModelKind};
 use makepad_urdf_player::robot_view::RobotViewWidgetRefExt;
 use makepad_widgets::*;
 
@@ -36,16 +37,14 @@ script_mod! {
                             spacing: 8.0
                             draw_bg +: {color: #x171d24}
 
-                            title := H3{
-                                text: "URDF Viewer v5"
-                                draw_text +: {color: #xdfe7ee}
-                            }
                             rb_unit_btn := Button{text: "Redbank III Unit"}
                             rb_array_btn := Button{text: "Redbank 4x8 Array"}
                             so100_btn := Button{text: "SO-100 Arm"}
+                            open_btn := Button{text: "Open folder…"}
+                            model_pick := DropDown{labels: ["(no folder)"]}
                             light_btn := Button{text: "Light: off"}
                             hint := Label{
-                                text: "drag orbit · alt drag light · shift/right drag pan · wheel zoom · arrows joints · A anim · R reset · L light"
+                                text: "drag orbit · alt drag light · shift/right pan · wheel zoom · arrows joints · A/R/L"
                                 draw_text +: {color: #x8391a0}
                             }
                         }
@@ -131,6 +130,9 @@ pub struct App {
     ui: WidgetRef,
     #[rust(false)]
     light_label_on: bool,
+    /// models discovered by the last folder scan, parallel to the dropdown
+    #[rust]
+    found: Vec<ModelFile>,
 }
 
 impl App {
@@ -161,7 +163,73 @@ impl App {
     }
 }
 
+impl App {
+    /// Ask the OS for a folder. makepad's own folder dialog is a stub on
+    /// macOS (it prints and returns), so this shells out to the system
+    /// picker; elsewhere, pass a folder on the command line instead.
+    fn pick_folder() -> Option<String> {
+        #[cfg(target_os = "macos")]
+        {
+            let out = std::process::Command::new("osascript")
+                .args([
+                    "-e",
+                    "POSIX path of (choose folder with prompt \"Choose a folder of URDF / STL / OBJ files\")",
+                ])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None; // user cancelled
+            }
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            return (!path.is_empty()).then_some(path);
+        }
+        #[allow(unreachable_code)]
+        {
+            log!("pass a folder on the command line: makepad-urdf-player <folder>");
+            None
+        }
+    }
+
+    /// Scan a folder and offer whatever it holds in the dropdown.
+    fn open_folder(&mut self, cx: &mut Cx, dir: &str) {
+        self.found = scan_folder(dir, 2);
+        let pick = self.ui.drop_down(cx, ids!(model_pick));
+        if self.found.is_empty() {
+            pick.set_labels(cx, vec!["(nothing found)".to_string()]);
+            log!("no .urdf/.stl/.obj under {}", dir);
+            return;
+        }
+        let labels: Vec<String> = self
+            .found
+            .iter()
+            .map(|m| match m.kind {
+                ModelKind::Urdf => m.relative.clone(),
+                ModelKind::Mesh => format!("{} (mesh)", m.relative),
+            })
+            .collect();
+        log!("found {} model(s) under {}", labels.len(), dir);
+        pick.set_labels(cx, labels);
+        // open the first one so the folder shows something immediately
+        let first = self.found[0].path.to_string_lossy().to_string();
+        let _ = self.ui.robot_view(cx, ids!(viewport)).open_path(cx, &first);
+    }
+}
+
 impl MatchEvent for App {
+    fn handle_startup(&mut self, cx: &mut Cx) {
+        // `makepad-urdf-player <folder>` opens that folder at startup, so the
+        // feature is usable without the GUI picker (and on platforms where
+        // there isn't one).
+        if let Some(dir) = std::env::args().nth(1) {
+            if std::path::Path::new(&dir).is_dir() {
+                self.open_folder(cx, &dir);
+            } else {
+                // a single file works too
+                let _ = self.ui.robot_view(cx, ids!(viewport)).open_path(cx, &dir);
+            }
+        }
+    }
+
     fn handle_actions(&mut self, cx: &mut Cx, actions: &Actions) {
         let mut load: Option<(&str, &str)> = None;
         for (btn, urdf, assets) in ROBOTS {
@@ -178,6 +246,17 @@ impl MatchEvent for App {
         }
         if self.ui.button(cx, ids!(light_btn)).clicked(actions) {
             self.toggle_light(cx);
+        }
+        if self.ui.button(cx, ids!(open_btn)).clicked(actions) {
+            if let Some(dir) = Self::pick_folder() {
+                self.open_folder(cx, &dir);
+            }
+        }
+        if let Some(i) = self.ui.drop_down(cx, ids!(model_pick)).selected(actions) {
+            if let Some(model) = self.found.get(i) {
+                let path = model.path.to_string_lossy().to_string();
+                let _ = self.ui.robot_view(cx, ids!(viewport)).open_path(cx, &path);
+            }
         }
         // the widget reports load outcomes; a real host would surface these
         let view = self.ui.robot_view(cx, ids!(viewport));

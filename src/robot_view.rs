@@ -11,7 +11,7 @@ use makepad_widgets::*;
 use makepad_xr::scene::*;
 
 use crate::render::draw::{DrawGridPlane, DrawRobotMesh, DrawSceneComposite};
-use crate::robot::{load_robot, ForwardKinematics, Robot};
+use crate::robot::{load_any, load_robot, ForwardKinematics, Robot};
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -289,27 +289,10 @@ impl RobotView {
         self.last_action = match load_robot(urdf_path, assets_dir) {
             Ok(mut robot) => {
                 ForwardKinematics::update(&mut robot);
-                self.movable = robot
-                    .joints
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, j)| j.is_movable())
-                    .map(|(i, _)| i)
-                    .collect();
-                self.selected = 0;
-                self.animating = false;
-                self.anim_t = 0.0;
-
-                self.frame_camera_on(&robot);
-
                 log!("RobotView: {} links, {} movable joints",
-                     self.robot_links_dbg(&robot), self.movable.len());
-                let links = robot.links.len();
-                let joints = self.movable.len();
-                self.robot = Some(robot);
-                self.geometries.clear();
-                self.geometries_dirty = true;
-                RobotViewAction::Loaded { links, movable_joints: joints }
+                     self.robot_links_dbg(&robot),
+                     robot.joints.iter().filter(|j| j.is_movable()).count());
+                self.adopt_robot(robot)
             }
             Err(e) => {
                 error!("RobotView: FAILED to load {}: {}", urdf_path, e);
@@ -323,6 +306,51 @@ impl RobotView {
             RobotViewAction::LoadFailed { error, .. } => Err(error.clone()),
             _ => Ok(()),
         }
+    }
+
+    /// Open a `.urdf`, `.stl` or `.obj` by path. Assets resolve against the
+    /// file's own folder, and a bare mesh becomes a single-link model — so a
+    /// host can hand this whatever the user picked out of a folder.
+    pub fn open_path(&mut self, path: &str) -> Result<(), String> {
+        log!("RobotView: opening {}", path);
+        self.last_action = match load_any(path) {
+            Ok(mut robot) => {
+                ForwardKinematics::update(&mut robot);
+                self.adopt_robot(robot)
+            }
+            Err(e) => {
+                error!("RobotView: FAILED to open {}: {}", path, e);
+                RobotViewAction::LoadFailed {
+                    path: path.to_string(),
+                    error: e.to_string(),
+                }
+            }
+        };
+        match &self.last_action {
+            RobotViewAction::LoadFailed { error, .. } => Err(error.clone()),
+            _ => Ok(()),
+        }
+    }
+
+    /// Shared tail of the load paths: adopt a robot and refresh derived state.
+    fn adopt_robot(&mut self, robot: Robot) -> RobotViewAction {
+        self.movable = robot
+            .joints
+            .iter()
+            .enumerate()
+            .filter(|(_, j)| j.is_movable())
+            .map(|(i, _)| i)
+            .collect();
+        self.selected = 0;
+        self.animating = false;
+        self.anim_t = 0.0;
+        self.frame_camera_on(&robot);
+        let links = robot.links.len();
+        let joints = self.movable.len();
+        self.robot = Some(robot);
+        self.geometries.clear();
+        self.geometries_dirty = true;
+        RobotViewAction::Loaded { links, movable_joints: joints }
     }
 
     /// Remove the current model, leaving an empty scene.
@@ -734,6 +762,17 @@ impl RobotViewRef {
     pub fn load_robot(&self, cx: &mut Cx, urdf: &str, assets_dir: &str) -> Result<(), String> {
         let r = match self.borrow_mut() {
             Some(mut inner) => inner.load_robot(urdf, assets_dir),
+            None => Err("RobotView not found".to_string()),
+        };
+        self.redraw(cx);
+        r
+    }
+
+    /// Open a `.urdf`, `.stl` or `.obj` by path — the "user picked a file"
+    /// entry point. Assets resolve against the file's own folder.
+    pub fn open_path(&self, cx: &mut Cx, path: &str) -> Result<(), String> {
+        let r = match self.borrow_mut() {
+            Some(mut inner) => inner.open_path(path),
             None => Err("RobotView not found".to_string()),
         };
         self.redraw(cx);

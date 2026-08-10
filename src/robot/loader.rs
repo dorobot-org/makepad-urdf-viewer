@@ -237,6 +237,171 @@ fn build_robot_from_urdf(urdf: &urdf_rs::Robot, assets_base: &str) -> LoadResult
 }
 
 /// Load mesh for a visual element
+/// A loadable model found on disk.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelFile {
+    /// Full path to open with [`load_any`].
+    pub path: std::path::PathBuf,
+    /// File name, for showing in a list.
+    pub name: String,
+    /// Path relative to the scanned folder, for disambiguating duplicates.
+    pub relative: String,
+    pub kind: ModelKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelKind {
+    /// A `.urdf` robot description.
+    Urdf,
+    /// A bare mesh (`.stl` / `.obj`) with no articulation.
+    Mesh,
+}
+
+/// Find everything in `dir` this crate can open: `.urdf`, `.stl` and `.obj`.
+///
+/// Walks up to `max_depth` levels (0 = just `dir` itself). Meshes that sit in
+/// a folder alongside a URDF are almost always that robot's parts rather than
+/// standalone models, so they are omitted — otherwise opening a robot folder
+/// buries the one URDF under fifty STLs. Results are sorted URDFs first, then
+/// by name.
+pub fn scan_folder(dir: impl AsRef<Path>, max_depth: usize) -> Vec<ModelFile> {
+    let root = dir.as_ref();
+    let mut out = Vec::new();
+    let mut dirs_with_urdf = std::collections::HashSet::new();
+    walk(root, root, 0, max_depth, &mut out, &mut dirs_with_urdf);
+
+    // Hide a robot's own part meshes so the URDF is not buried under them —
+    // but only where they clearly belong to it: in the same directory, or in
+    // a conventionally named subdirectory of one. A blanket "anywhere below a
+    // URDF" rule is too greedy: one URDF at the top of the scanned folder
+    // would hide every mesh in every unrelated sibling directory.
+    const PART_DIRS: [&str; 4] = ["meshes", "mesh", "visual", "collision"];
+    out.retain(|m| {
+        if m.kind == ModelKind::Urdf {
+            return true;
+        }
+        let Some(parent) = m.path.parent() else { return true };
+        if dirs_with_urdf.contains(parent) {
+            return false; // sits right next to a URDF
+        }
+        let named_like_parts = parent
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| PART_DIRS.contains(&n.to_lowercase().as_str()))
+            .unwrap_or(false);
+        if named_like_parts {
+            if let Some(grandparent) = parent.parent() {
+                if dirs_with_urdf.contains(grandparent) {
+                    return false; // robot/meshes/*.stl next to robot/*.urdf
+                }
+            }
+        }
+        true
+    });
+
+    out.sort_by(|a, b| {
+        (a.kind != ModelKind::Urdf)
+            .cmp(&(b.kind != ModelKind::Urdf))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    out
+}
+
+fn walk(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    max_depth: usize,
+    out: &mut Vec<ModelFile>,
+    dirs_with_urdf: &mut std::collections::HashSet<std::path::PathBuf>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut subdirs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // skip the usual noise
+            let skip = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with('.') || n == "target" || n == "node_modules")
+                .unwrap_or(false);
+            if !skip {
+                subdirs.push(path);
+            }
+            continue;
+        }
+        let kind = match extension_of(&path.to_string_lossy()).as_deref() {
+            Some("urdf") => ModelKind::Urdf,
+            Some("stl") | Some("obj") => ModelKind::Mesh,
+            _ => continue,
+        };
+        if kind == ModelKind::Urdf {
+            if let Some(parent) = path.parent() {
+                dirs_with_urdf.insert(parent.to_path_buf());
+            }
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .to_string();
+        out.push(ModelFile { path, name, relative, kind });
+    }
+    if depth < max_depth {
+        for sub in subdirs {
+            walk(root, &sub, depth + 1, max_depth, out, dirs_with_urdf);
+        }
+    }
+}
+
+/// Open a `.urdf`, `.stl` or `.obj` by path, choosing by extension.
+///
+/// A bare mesh becomes a single fixed link, so the viewer can show mesh files
+/// with no URDF at all. Assets resolve against the file's own folder.
+pub fn load_any(path: impl AsRef<Path>) -> LoadResult<Robot> {
+    let path = path.as_ref();
+    let assets = path
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    match extension_of(&path.to_string_lossy()).as_deref() {
+        Some("stl") | Some("obj") => load_mesh_as_robot(path),
+        _ => load_robot(path, &assets),
+    }
+}
+
+/// Wrap a single mesh file as a one-link robot.
+pub fn load_mesh_as_robot(path: impl AsRef<Path>) -> LoadResult<Robot> {
+    let path = path.as_ref();
+    let name = path
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("mesh")
+        .to_string();
+    let mut mesh = mesh_from_path(&path.to_string_lossy()).map_err(|reason| {
+        RobotError::MeshLoadError {
+            path: path.to_path_buf(),
+            reason,
+        }
+    })?;
+    mesh.make_double_sided();
+
+    let mut robot = Robot::new(name.clone());
+    let mut link = RobotLink::new(name.clone());
+    link.mesh_data = Some(mesh);
+    robot.link_map.insert(name.clone(), 0);
+    robot.root_link = name;
+    robot.links.push(link);
+    robot.link_transforms = vec![glam::Mat4::IDENTITY];
+    Ok(robot)
+}
+
 /// `package://pkg/rel/path.stl` -> `rel/path.stl`, `file:///a/b.stl` -> `/a/b.stl`.
 /// Anything else is returned unchanged.
 ///
