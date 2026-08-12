@@ -134,6 +134,14 @@ pub struct Robot {
     pub scale: f32,
     /// Center point of the robot
     pub center: glam::Vec3,
+    /// World pose of the root link — where the floating base actually is.
+    ///
+    /// A URDF describes a robot relative to its root, so forward kinematics
+    /// starts from identity and the robot renders at the origin however far it
+    /// has walked. Playing back a recorded trajectory needs the base to move
+    /// too, or the robot marches in place. Identity reproduces the previous
+    /// behaviour exactly.
+    pub base_pose: glam::Mat4,
 }
 
 impl Robot {
@@ -148,6 +156,7 @@ impl Robot {
             link_transforms: Vec::new(),
             scale: 1.0,
             center: glam::Vec3::ZERO,
+            base_pose: glam::Mat4::IDENTITY,
         }
     }
 

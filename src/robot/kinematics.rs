@@ -19,7 +19,9 @@ impl ForwardKinematics {
 
     /// Compute forward kinematics for the entire robot
     fn compute_transforms(robot: &mut Robot) {
-        let root_offset = glam::Mat4::IDENTITY;
+        // The floating base. Identity unless a caller has placed the robot
+        // in the world (see `Robot::base_pose`).
+        let root_offset = robot.base_pose;
 
         // Set root link transform
         if let Some(&root_idx) = robot.link_map.get(&robot.root_link) {

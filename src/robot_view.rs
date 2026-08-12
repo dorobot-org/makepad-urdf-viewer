@@ -182,6 +182,11 @@ pub struct RobotView {
     geometry_pool: Vec<Geometry>,
     #[rust]
     grid_geometry: Option<Geometry>,
+    /// Static world geometry drawn under the robot (terrain), if loaded.
+    #[rust]
+    terrain_geometry: Option<Geometry>,
+    #[rust(0usize)]
+    terrain_tris: usize,
     #[rust(0.05f32)]
     grid_spacing: f32,
     #[rust(2.0f32)]
@@ -420,6 +425,82 @@ impl RobotView {
 
     /// Drive all movable joints from a state vector (e.g. dataset playback).
     /// Values map to movable joints in URDF order; extra values are ignored.
+    /// Names of the movable joints, in the order `set_joint_angles` expects.
+    ///
+    /// Callers replaying recorded data have their own joint ordering and no
+    /// reliable way to reproduce this one — the URDF's movable subset, in file
+    /// order, minus anything commented out. Matching by name against this list
+    /// is the only way to be sure an angle lands on the joint it names.
+    pub fn movable_joint_names(&self) -> Vec<String> {
+        let Some(robot) = &self.robot else { return Vec::new() };
+        self.movable
+            .iter()
+            .filter_map(|&ji| robot.get_joint(ji).map(|j| j.name.clone()))
+            .collect()
+    }
+
+    /// Place the floating base in the world.
+    ///
+    /// `pos` is metres in the URDF's own frame and `quat` is xyzw. Without
+    /// this a recorded trajectory replays with the robot marching in place,
+    /// however far it actually travelled.
+    pub fn set_base_pose(&mut self, cx: &mut Cx, pos: [f32; 3], quat: [f32; 4]) {
+        let Some(robot) = &mut self.robot else { return };
+        let q = glam::Quat::from_xyzw(quat[0], quat[1], quat[2], quat[3]);
+        // A zero quaternion would produce NaNs across the whole chain; treat
+        // it as "no rotation" rather than poisoning every link transform.
+        let q = if q.length_squared() > 1e-12 { q.normalize() } else { glam::Quat::IDENTITY };
+        robot.base_pose =
+            glam::Mat4::from_rotation_translation(q, glam::Vec3::new(pos[0], pos[1], pos[2]));
+        ForwardKinematics::update(robot);
+        self.area.redraw(cx);
+    }
+
+    /// Load static world geometry (terrain) from a binary STL, drawn under the
+    /// robot in world coordinates.
+    ///
+    /// Separate from the robot's own meshes: it has no link, no joint and no
+    /// transform of its own, so it cannot ride the link draw path. Returns the
+    /// triangle count so a caller can report what it is showing.
+    pub fn load_terrain(&mut self, cx: &mut Cx, path: &str) -> Result<usize, String> {
+        let mesh = crate::mesh::MeshData::from_stl(path)?;
+        let n_verts = mesh.vertices.len() / 9;
+        let mut vertices = Vec::with_capacity(n_verts * 8);
+        for i in 0..n_verts {
+            let v = &mesh.vertices[i * 9..i * 9 + 9];
+            vertices.extend_from_slice(&[v[0], v[1], v[2], 1.0, v[4], v[5], v[6], 0.0]);
+        }
+        let tris = mesh.indices.len() / 3;
+        let geometry = Geometry::new(cx);
+        geometry.update(cx, mesh.indices, vertices);
+        self.terrain_geometry = Some(geometry);
+        self.terrain_tris = tris;
+        self.area.redraw(cx);
+        Ok(tris)
+    }
+
+    /// Drop any loaded terrain.
+    pub fn clear_terrain(&mut self, cx: &mut Cx) {
+        self.terrain_geometry = None;
+        self.terrain_tris = 0;
+        self.area.redraw(cx);
+    }
+
+    pub fn terrain_triangle_count(&self) -> usize {
+        self.terrain_tris
+    }
+
+    /// Move the orbit pivot to a point in the model's own (Z-up) frame.
+    ///
+    /// For following a walking robot: the camera is framed once at load, so a
+    /// base pose that travels takes the robot straight out of shot. This moves
+    /// only the pivot — orbit angles and zoom are the user's and are left
+    /// alone. Same axis mapping as `frame_camera_on`: (x, y, z) -> (x, z, -y).
+    pub fn set_camera_target(&mut self, cx: &mut Cx, pos: [f32; 3]) {
+        self.camera.desktop_target = vec3(pos[0], pos[2], -pos[1]);
+        self.area.redraw(cx);
+    }
+
     pub fn set_joint_angles(&mut self, cx: &mut Cx, angles: &[f32]) {
         let Some(robot) = &mut self.robot else { return };
         for (k, &ji) in self.movable.iter().enumerate() {
@@ -703,6 +784,17 @@ impl RobotView {
 
         let l = self.light_vec();
         self.draw_mesh.key_light = vec4(l[0], l[1], l[2], if self.light_on { 1.0 } else { 0.0 });
+
+        // Terrain first: it is opaque world geometry the robot stands on, and
+        // drawing it before the links keeps the depth order obvious.
+        if let Some(terrain) = &self.terrain_geometry {
+            self.draw_mesh.transform = m4(world);
+            self.draw_mesh.color = vec4(0.34, 0.33, 0.30, 1.0);
+            self.draw_mesh.scale = vec3(1.0, 1.0, 1.0);
+            self.draw_mesh.depth_clip = 0.0;
+            let gid = terrain.geometry_id();
+            self.draw_mesh.draw(cx, gid);
+        }
 
         let selected_link = self.selected_link_index();
         if let Some(robot) = &self.robot {
