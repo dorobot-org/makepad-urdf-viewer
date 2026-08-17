@@ -62,17 +62,17 @@ script_mod! {
         // model to show; leave empty and call `load_robot` from Rust instead
         urdf: ""
         assets: ""
-        // environment — the menagerie G1 palette: blue-grey gradient sky,
-        // dark blue checker ground with light cell edges, mirror floor.
+        // environment — the viewer's own daylight look. LOOKS ARE THE
+        // HOST'S: these defaults stay as this app authored them, and a host
+        // that wants another palette (nexus-studio's menagerie look, with
+        // its checker floor and mirror) sets it where it instantiates the
+        // widget. A default here repaints every embedder that never asked.
         show_grid: true
-        sky_horizon: #x26404F
-        sky_zenith: #x4D80B3
-        ground_color: #x334D66
-        ground2_color: #x1A3350
-        grid_color: #xB3B3B3
-        // Mirror floor is OPT-IN: a host that never asked for a reflection
-        // should not find one under its robot. nexus-studio sets 0.22 for
-        // the MuJoCo-parity look.
+        sky_horizon: #xFFFBFB
+        sky_zenith: #xFAE5E7
+        ground_color: #xFFFFC5
+        ground2_color: #xFFFFC5
+        grid_color: #x6B6A3D
         floor_reflectance: 0.0
         material_roughness: 0.42
         material_metallic: 0.10
