@@ -10,7 +10,7 @@
 use makepad_widgets::*;
 use makepad_xr::scene::*;
 
-use crate::render::draw::{DrawGridPlane, DrawRobotMesh, DrawSceneComposite};
+use crate::render::draw::{DrawGridPlane, DrawRobotMesh, DrawSceneComposite, DrawShadowDepth};
 use crate::robot::{load_any, load_robot, ForwardKinematics, Robot};
 
 script_mod! {
@@ -34,6 +34,7 @@ script_mod! {
         grid_color: #x6B6A3D
         draw_bg: mod.draw.DrawSceneComposite{}
         draw_mesh: mod.draw.DrawRobotMesh{}
+        draw_shadow: mod.draw.DrawShadowDepth{}
         draw_grid: mod.draw.DrawGridPlane{}
         camera: mod.widgets.XrCamera{
             fov_y: 45.0
@@ -120,6 +121,16 @@ pub enum RobotViewAction {
     LoadFailed { path: String, error: String },
 }
 
+/// Offscreen supersampling factor for the 3D pass. 2.0 = 4 samples/pixel
+/// after the composite's bilinear downsample; the cost is 4x the fragment
+/// work on a pass that draws a few hundred thousand triangles, which is
+/// nothing next to having a readable silhouette.
+const SSAA_SCALE: f64 = 2.0;
+
+/// Shadow map resolution. 2048 is what MuJoCo's Filament backend defaults to
+/// and is ample for a box fitted to one robot.
+const SHADOW_MAP_SIZE: usize = 2048;
+
 const DEFAULT_LINK_COLOR: [f32; 4] = [0.62, 0.65, 0.70, 1.0];
 const SELECTED_TINT: [f32; 3] = [1.0, 0.75, 0.25];
 
@@ -157,6 +168,8 @@ pub struct RobotView {
     draw_mesh: DrawRobotMesh,
     #[live]
     draw_grid: DrawGridPlane,
+    #[live]
+    draw_shadow: DrawShadowDepth,
     #[live(vec4(0.051, 0.067, 0.091, 1.0))]
     clear_color: Vec4f,
     #[live]
@@ -165,6 +178,16 @@ pub struct RobotView {
     pass: DrawPass,
     #[new]
     draw_list: DrawList,
+    #[new]
+    shadow_pass: DrawPass,
+    #[new]
+    shadow_list: DrawList,
+    #[new]
+    shadow_texture: Texture,
+    #[new]
+    shadow_depth_texture: Texture,
+    #[rust]
+    light_vp: Mat4f,
     #[new]
     color_texture: Texture,
     #[new]
@@ -276,6 +299,42 @@ impl RobotView {
         self.pass
             .set_depth_texture(cx, &self.depth_texture, DrawPassClearDepth::ClearWith(1.0));
         cx.passes[self.pass.draw_pass_id()].keep_camera_matrix = true;
+
+        // Shadow map: a float colour target, because makepad binds DepthD32
+        // as a pass attachment with no path to sample it as a texture. Fixed
+        // size — it covers a box fitted to the robot, so it does not need to
+        // follow the viewport.
+        // RenderBGRAu8, not RenderRGBAf32: the f32 render target sampled as
+        // solid black in the lit pass (unbound-texture signature), while this
+        // is the exact format the composite already samples successfully.
+        // Depth is packed across RGB below to recover the precision.
+        self.shadow_texture = Texture::new_with_format(
+            cx,
+            TextureFormat::RenderBGRAu8 {
+                size: TextureSize::Fixed { width: SHADOW_MAP_SIZE, height: SHADOW_MAP_SIZE },
+                initial: true,
+            },
+        );
+        self.shadow_depth_texture = Texture::new_with_format(
+            cx,
+            TextureFormat::DepthD32 {
+                size: TextureSize::Fixed { width: SHADOW_MAP_SIZE, height: SHADOW_MAP_SIZE },
+                initial: true,
+            },
+        );
+        self.shadow_pass.set_color_texture(
+            cx,
+            &self.shadow_texture,
+            // Cleared to 1.0 = "nothing occludes here", so anything the light
+            // never rendered stays lit.
+            DrawPassClearColor::ClearWith(vec4(1.0, 1.0, 1.0, 1.0)),
+        );
+        self.shadow_pass.set_depth_texture(
+            cx,
+            &self.shadow_depth_texture,
+            DrawPassClearDepth::ClearWith(1.0),
+        );
+        cx.passes[self.shadow_pass.draw_pass_id()].keep_camera_matrix = true;
 
         // No built-in model: a library widget shows whatever the host asked
         // for, either via the `urdf`/`assets` properties or `load_robot`.
@@ -774,6 +833,87 @@ impl RobotView {
         self.area.redraw(cx);
     }
 
+
+    /// Orthographic view-projection looking down the key light, fitted to the
+    /// robot's world bounds (plus the ground it stands on, so the shadow it
+    /// casts is inside the box). Recomputed per frame because both the light
+    /// and the robot move.
+    fn compute_light_vp(&self) -> glam::Mat4 {
+        let world = z_up_to_y_up();
+        let (center, radius) = match &self.robot {
+            Some(robot) => {
+                let (bmin, bmax) = robot.bounds_world();
+                let c = world.transform_point3((bmin + bmax) * 0.5);
+                let r = ((bmax - bmin).length() * 0.5).max(0.05);
+                (c, r)
+            }
+            None => (glam::Vec3::new(0.0, 0.2, 0.0), 0.5),
+        };
+        // Pad so the ground under the robot — which receives the shadow — is
+        // inside the box, and so a limb swinging out does not clip its own
+        // shadow off at the edge.
+        let r = radius * 1.9;
+        let l = self.light_vec();
+        let dir = glam::Vec3::new(l[0], l[1], l[2]).normalize_or_zero();
+        let dir = if dir.length_squared() < 1e-6 { glam::Vec3::Y } else { dir };
+        let eye = center + dir * (r * 2.0);
+        let up = if dir.y.abs() > 0.95 { glam::Vec3::Z } else { glam::Vec3::Y };
+        let view = glam::Mat4::look_at_rh(eye, center, up);
+        let proj = glam::Mat4::orthographic_rh(-r, r, -r, r, 0.01, r * 4.0);
+        proj * view
+    }
+
+    /// Render every link (and the terrain) into the shadow map from the
+    /// light's point of view. Same geometry as the lit pass — only the
+    /// transform and the output differ.
+    fn draw_shadow_pass(&mut self, cx: &mut Cx2d, scene_state: SceneState3D) {
+        if self.robot.is_none() {
+            return;
+        }
+        let light_vp = self.compute_light_vp();
+        self.light_vp = m4(light_vp);
+        self.shadow_pass.set_size(cx.cx, DVec2 {
+            x: SHADOW_MAP_SIZE as f64,
+            y: SHADOW_MAP_SIZE as f64,
+        });
+        cx.make_child_pass(&self.shadow_pass);
+        cx.begin_pass(&self.shadow_pass, None);
+        {
+            // Same scoping as draw_scene: the draw list and the instances must
+            // live in ONE Cx3d, or the instances are added outside the list
+            // that the pass actually submits and the map comes out empty.
+            let cx3d = &mut Cx3d::new(cx.cx);
+            self.shadow_list.begin_always(cx3d);
+            cx3d.begin_scene_3d(scene_state);
+            let previous_world = cx3d.set_scene_world_transform_3d(m4(glam::Mat4::IDENTITY));
+            let world = z_up_to_y_up();
+            self.draw_shadow.light_vp = self.light_vp;
+            self.draw_shadow.scale = vec3(1.0, 1.0, 1.0);
+            let mut shadow_draws = 0usize;
+            if let Some(robot) = &self.robot {
+                for (i, _link) in robot.links.iter().enumerate() {
+                    let Some(Some(slot)) = self.geometries.get(i) else { continue };
+                    let Some(geometry) = self.geometry_pool.get(*slot) else { continue };
+                    let Some(transform) = robot.get_link_transform(i) else { continue };
+                    self.draw_shadow.transform = m4(world * transform);
+                    let gid = geometry.geometry_id();
+                    self.draw_shadow.draw(cx3d, gid);
+                    shadow_draws += 1;
+                }
+            }
+            if std::env::var("URDF_SHADOW_DEBUG").is_ok() && self.dbg_frames % 120 == 0 {
+                eprintln!("[shadow] {shadow_draws} draws, light_vp[12..15]={:?}",
+                    &self.light_vp.v[12..15]);
+            }
+            if let Some(prev) = previous_world {
+                cx3d.set_scene_world_transform_3d(prev);
+            }
+            cx3d.end_scene_3d();
+            self.shadow_list.end(cx3d);
+        }
+        cx.end_pass(&self.shadow_pass);
+    }
+
     fn draw_scene(&mut self, cx: &mut Cx3d, scene_state: SceneState3D) {
         self.draw_list.begin_always(cx);
         cx.begin_scene_3d(scene_state);
@@ -784,6 +924,31 @@ impl RobotView {
 
         let l = self.light_vec();
         self.draw_mesh.key_light = vec4(l[0], l[1], l[2], if self.light_on { 1.0 } else { 0.0 });
+        // Ambient follows the environment the composite actually paints, so a
+        // re-themed sky relights the robot instead of leaving it lit for the
+        // previous one. Sky ambient is the horizon/zenith average (what a
+        // surface facing up integrates); ground ambient is the plane's colour
+        // dimmed to a plausible bounce.
+        // Shadow lookup state — matrix from the pass we just rendered, texel
+        // size so the PCF taps land on neighbouring texels.
+        self.draw_mesh.light_vp = self.light_vp;
+        let texel = 1.0 / SHADOW_MAP_SIZE as f32;
+        self.draw_mesh.shadow_texel = vec4(texel, texel, 0.008, 0.03);
+        self.draw_mesh.draw_vars.set_texture(0, &self.shadow_texture);
+
+        let sky_amb = 0.23; // 0.46 of the horizon/zenith average
+        self.draw_mesh.ambient_sky = vec4(
+            (self.sky_horizon.x + self.sky_zenith.x) * sky_amb,
+            (self.sky_horizon.y + self.sky_zenith.y) * sky_amb,
+            (self.sky_horizon.z + self.sky_zenith.z) * sky_amb,
+            1.0,
+        );
+        self.draw_mesh.ambient_ground = vec4(
+            self.ground_color.x * 0.40,
+            self.ground_color.y * 0.40,
+            self.ground_color.z * 0.40,
+            1.0,
+        );
 
         // Terrain first: it is opaque world geometry the robot stands on, and
         // drawing it before the links keeps the depth order obvious.
@@ -842,6 +1007,12 @@ impl RobotView {
         self.draw_grid.spacing = self.grid_spacing;
         self.draw_grid.plane_y = self.grid_y;
         self.draw_grid.px_scale = self.px_scale;
+        self.draw_grid.light_vp = self.light_vp;
+        let gtexel = 1.0 / SHADOW_MAP_SIZE as f32;
+        self.draw_grid.shadow_texel = vec4(gtexel, gtexel, 0.008, 0.0);
+        self.draw_grid.draw_vars.set_texture(0, &self.shadow_texture);
+        self.draw_grid.debug_shadow =
+            if std::env::var("URDF_SHADOW_DEBUG").is_ok() { 1.0 } else { 0.0 };
         self.draw_grid.depth_clip = 0.0;
         if self.show_grid {
             self.draw_grid.draw(cx, grid_geom);
@@ -1148,7 +1319,12 @@ impl Widget for RobotView {
         self.ensure_initialized(cx.cx);
         self.ensure_geometries(cx.cx);
         self.camera.set_desktop_viewport_rect(rect);
-        self.pass.set_size(cx, rect.size);
+        // Supersample: makepad has no MSAA render targets (no sample count in
+        // TextureFormat), so the offscreen 3D pass is rendered at SSAA_SCALE x
+        // and the composite's bilinear fetch box-filters it back down. This is
+        // the only antialiasing the robot's silhouette gets — without it the
+        // STL edges crawl visibly while orbiting.
+        self.pass.set_size(cx, rect.size * SSAA_SCALE);
         self.pass.set_color_texture(
             cx,
             &self.color_texture,
@@ -1156,6 +1332,13 @@ impl Widget for RobotView {
         );
         self.pass
             .set_depth_texture(cx, &self.depth_texture, DrawPassClearDepth::ClearWith(1.0));
+
+        // Shadow map first: the lit pass samples it, so it has to be
+        // rendered (and its own child pass closed) before we begin the main
+        // one.
+        if let Some(scene_state) = self.camera.desktop_scene_state(rect, cx.time()) {
+            self.draw_shadow_pass(cx, scene_state);
+        }
 
         cx.make_child_pass(&self.pass);
         cx.begin_pass(&self.pass, None);

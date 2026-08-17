@@ -26,6 +26,11 @@ fn virtual_asset<P: AsRef<Path>>(path: P) -> Option<&'static [u8]> {
 use crate::mesh::MeshData;
 use super::model::{Robot, RobotLink, RobotJoint, JointType};
 
+/// Crease angle for STL normal smoothing. 45 deg keeps machined edges and
+/// chamfers crisp while smoothing the tessellation of curved surfaces —
+/// CAD exports put far more facets around a fillet than the crease itself.
+const SMOOTH_CREASE_DEG: f32 = 45.0;
+
 /// Result type for robot loading operations
 pub type LoadResult<T> = Result<T, RobotError>;
 
@@ -160,6 +165,10 @@ fn build_robot_from_urdf(urdf: &urdf_rs::Robot, assets_base: &str) -> LoadResult
 
         if !link_meshes.is_empty() {
             let mut combined = MeshData::combine(link_meshes);
+            // Smooth before doubling: the doubled half is a normal-flipped
+            // copy, so smoothing after would average the two sheets together
+            // and cancel them out.
+            combined.smooth_normals(SMOOTH_CREASE_DEG);
             combined.make_double_sided();
             robot_link.mesh_data = Some(combined);
         }
@@ -390,6 +399,7 @@ pub fn load_mesh_as_robot(path: impl AsRef<Path>) -> LoadResult<Robot> {
             reason,
         }
     })?;
+    mesh.smooth_normals(SMOOTH_CREASE_DEG);
     mesh.make_double_sided();
 
     let mut robot = Robot::new(name.clone());

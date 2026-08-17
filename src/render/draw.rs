@@ -13,6 +13,44 @@ script_mod! {
     use mod.draw
     use mod.geom
 
+    // Depth-only pass from the light's point of view. Writes linear distance
+    // along the light axis into a float colour target — makepad binds
+    // DepthD32 as a pass attachment and has no path to sample it as a
+    // texture, so the shadow map has to be a colour render target.
+    mod.draw.DrawShadowDepth = mod.std.set_type_default() do #(DrawShadowDepth::script_shader(vm)){
+        alpha_blend: false
+        backface_culling: false
+        vertex_pos: vertex_position(vec4f)
+        fb0: fragment_output(0, vec4f)
+        draw_pass: uniform_buffer(draw.DrawPassUniforms)
+        draw_list: uniform_buffer(draw.DrawListUniforms)
+        geom: vertex_buffer(geom.IcoVertex, geom.IcoGeom)
+        v_depth: varying(f32)
+
+        vertex: fn() {
+            let local_pos = vec3(
+                self.geom.pos.x * self.scale.x,
+                self.geom.pos.y * self.scale.y,
+                self.geom.pos.z * self.scale.z
+            )
+            let world = self.transform * vec4(local_pos.x, local_pos.y, local_pos.z, 1.0)
+            let clip = self.light_vp * vec4(world.x, world.y, world.z, 1.0)
+            // glam's orthographic_rh already yields z in [0,1] (Metal/wgpu
+            // convention) — mapping it again with *0.5+0.5 squeezed the whole
+            // scene into the top half of an 8-bit target.
+            self.v_depth = clip.z
+            self.vertex_pos = clip
+        }
+
+        pixel: fn() -> vec4f {
+            return vec4(self.v_depth, self.v_depth, self.v_depth, 1.0)
+        }
+
+        fragment: fn() {
+            self.fb0 = self.pixel()
+        }
+    }
+
     mod.draw.DrawRobotMesh = mod.std.set_type_default() do #(DrawRobotMesh::script_shader(vm)){
         alpha_blend: false
         backface_culling: false
@@ -22,6 +60,7 @@ script_mod! {
         draw_pass: uniform_buffer(draw.DrawPassUniforms)
         draw_list: uniform_buffer(draw.DrawListUniforms)
         geom: vertex_buffer(geom.IcoVertex, geom.IcoGeom)
+        shadow_map: texture_2d(float)
         v_world_clip: varying(vec4f)
         v_world: varying(vec3f)
         v_normal: varying(vec3f)
@@ -66,14 +105,51 @@ script_mod! {
             let lamp = self.key_light.w
             let fill_dir = normalize(vec3(0.58, 0.35, -0.62))
 
-            // hemisphere ambient matching the morning environment: bright
-            // warm-white sky above, warm brown bounce off the planet below
-            let sky = vec3(0.46, 0.45, 0.43)
-            let ground = vec3(0.40, 0.39, 0.30)
+            // Hemisphere ambient, driven by the SAME colours the composite
+            // paints the environment with (per-instance, because set_uniform
+            // is unreliable on wasm). Hardcoding it here meant re-theming the
+            // sky left objects lit for the old one — a lit robot floating in
+            // an environment it visibly does not belong to.
+            let sky = self.ambient_sky.xyz
+            let ground = self.ambient_ground.xyz
             let hemi = mix(ground, sky, normal.y * 0.5 + 0.5)
 
+            // Shadow lookup: project the fragment into the light's clip box
+            // and compare against the nearest surface the light saw. 3x3 PCF
+            // because this dialect has no textureGather, and a slope-scaled
+            // bias because grazing surfaces self-shadow otherwise (there is
+            // no fwidth here either, hence the explicit N.L term).
+            let lit = 1.0 - clamp(dot(normal, key_dir), 0.0, 1.0)
+            let bias = self.shadow_texel.z + self.shadow_texel.w * lit
+            let sc = self.light_vp * vec4(self.v_world.x, self.v_world.y, self.v_world.z, 1.0)
+            let suv = vec2(sc.x * 0.5 + 0.5, 0.5 - sc.y * 0.5)
+            let sdepth = sc.z
+            let mut shade = 0.0
+            let mut taps = 0.0
+            // Outside the map (or behind the light) is lit, never shadowed —
+            // the map only covers a box around the robot.
+            if suv.x > 0.001 && suv.x < 0.999 && suv.y > 0.001 && suv.y < 0.999 && sdepth < 1.0 {
+                for oy in 0..3 {
+                    for ox in 0..3 {
+                        let o = vec2(
+                            (float(ox) - 1.0) * self.shadow_texel.x,
+                            (float(oy) - 1.0) * self.shadow_texel.y
+                        )
+                        let occluder = self.shadow_map.sample(vec2(suv.x + o.x, suv.y + o.y)).x
+                        shade = shade + step(occluder + bias, sdepth)
+                        taps = taps + 1.0
+                    }
+                }
+                shade = shade / max(taps, 1.0)
+            }
+            // NOT gated on the lamp switch: the key light still contributes
+            // 35% with the lamp off (see key_gain below), so gating the shadow
+            // on it made the lighting and the shadowing disagree — a lit
+            // scene with no shadows in it.
+            let shadow = 1.0 - shade * self.shadow_strength
+
             // warm key + cool fill diffuse; the lamp lifts the key
-            let key = max(dot(normal, key_dir), 0.0)
+            let key = max(dot(normal, key_dir), 0.0) * shadow
             let fill = max(dot(normal, fill_dir), 0.0)
             let key_gain = 0.35 + 0.55 * lamp
             let diffuse = self.color.xyz * (
@@ -85,7 +161,7 @@ script_mod! {
             // blinn specular from both lights
             let half_key = normalize(key_dir + view_dir)
             let half_fill = normalize(fill_dir + view_dir)
-            let spec_gain = 0.80 + 0.60 * lamp
+            let spec_gain = (0.80 + 0.60 * lamp) * shadow
             let spec = (pow(max(dot(normal, half_key), 0.0), 48.0) * 0.45
                 + pow(max(dot(normal, half_fill), 0.0), 24.0) * 0.12) * spec_gain
 
@@ -113,6 +189,7 @@ script_mod! {
         draw_pass: uniform_buffer(draw.DrawPassUniforms)
         draw_list: uniform_buffer(draw.DrawListUniforms)
         geom: vertex_buffer(geom.IcoVertex, geom.IcoGeom)
+        shadow_map: texture_2d(float)
         v_world: varying(vec3f)
         v_world_clip: varying(vec4f)
 
@@ -204,11 +281,47 @@ script_mod! {
             // fragment counts as grazing and the whole ground hazes to white.
             let haze_h = max(cam_h, self.spacing * 1.5)
             let hz = clamp(1.0 - smoothstep(0.006, 0.060, haze_h / dist), 0.0, 1.0)
+            // The ground is where a cast shadow actually reads, so the plane
+            // samples the same map the meshes do. Flat and facing straight up,
+            // so a constant bias is enough — no slope term needed.
+            let sc = self.light_vp * vec4(self.v_world.x, self.v_world.y, self.v_world.z, 1.0)
+            let suv = vec2(sc.x * 0.5 + 0.5, 0.5 - sc.y * 0.5)
+            let sdepth = sc.z
+            let mut shade = 0.0
+            let mut taps = 0.0
+            if suv.x > 0.001 && suv.x < 0.999 && suv.y > 0.001 && suv.y < 0.999 && sdepth < 1.0 {
+                for oy in 0..3 {
+                    for ox in 0..3 {
+                        let o = vec2(
+                            (float(ox) - 1.0) * self.shadow_texel.x,
+                            (float(oy) - 1.0) * self.shadow_texel.y
+                        )
+                        let occ = self.shadow_map.sample(vec2(suv.x + o.x, suv.y + o.y)).x
+                        shade = shade + step(occ + self.shadow_texel.z, sdepth)
+                        taps = taps + 1.0
+                    }
+                }
+                shade = shade / max(taps, 1.0)
+            }
+            if self.debug_shadow > 0.5 {
+                let c = self.shadow_map.sample(suv).x
+                // red = outside the map entirely
+                if suv.x < 0.001 || suv.x > 0.999 || suv.y < 0.001 || suv.y > 0.999 {
+                    return vec4(1.0, 0.0, 0.0, 1.0)
+                }
+                return vec4(c, c, sdepth, 1.0)
+            }
+            // Fades out with the same haze the lines do, so a shadow never
+            // hangs in the fog past where the ground itself has faded.
+            let sh = 1.0 - shade * self.shadow_strength * (1.0 - hz)
+            let soil_s = soil_a * sh
+            let line_s = line_a * sh
+
             // premultiplied output for makepad's ONE / ONE_MINUS_SRC_ALPHA blend
             return vec4(
-                mix(self.soil_color.x * soil_a + self.color.x * line_a, self.haze_color.x * alpha, hz),
-                mix(self.soil_color.y * soil_a + self.color.y * line_a, self.haze_color.y * alpha, hz),
-                mix(self.soil_color.z * soil_a + self.color.z * line_a, self.haze_color.z * alpha, hz),
+                mix(self.soil_color.x * soil_s + self.color.x * line_s, self.haze_color.x * alpha, hz),
+                mix(self.soil_color.y * soil_s + self.color.y * line_s, self.haze_color.y * alpha, hz),
+                mix(self.soil_color.z * soil_s + self.color.z * line_s, self.haze_color.z * alpha, hz),
                 alpha
             )
         }
@@ -386,6 +499,19 @@ pub struct DrawGridPlane {
     /// 2 * tan(fov_y / 2) / viewport_height_px
     #[live(0.001)]
     pub px_scale: f32,
+    /// Light view-projection for the shadow lookup (see DrawRobotMesh).
+    #[live]
+    pub light_vp: Mat4f,
+    /// x,y = shadow-map texel in UV; z = depth bias (w unused here).
+    #[live(vec4(0.0005, 0.0005, 0.0015, 0.0))]
+    pub shadow_texel: Vec4f,
+    #[live(0.75)]
+    pub shadow_strength: f32,
+    /// >0.5 paints the ground with the raw shadow-map sample instead of the
+    /// grid, so an empty map (uniform white) is distinguishable from a bad
+    /// projection (map content in the wrong place). URDF_SHADOW_DEBUG=1.
+    #[live(0.0)]
+    pub debug_shadow: f32,
     #[live(1.0)]
     pub depth_clip: f32,
 }
@@ -450,11 +576,56 @@ pub struct DrawRobotMesh {
     /// Per-instance, not a uniform: set_uniform is unreliable on wasm.
     #[live(vec4(-0.35, 0.84, 0.42, 0.0))]
     pub key_light: Vec4f,
+    /// Upper hemisphere ambient — set from the environment's sky colour so
+    /// objects are lit by the world they are drawn in. Same per-instance
+    /// reasoning as `key_light`.
+    #[live(vec4(0.46, 0.45, 0.43, 1.0))]
+    pub ambient_sky: Vec4f,
+    /// Lower hemisphere ambient — the bounce off the ground plane.
+    #[live(vec4(0.40, 0.39, 0.30, 1.0))]
+    pub ambient_ground: Vec4f,
+    /// Light view-projection for the shadow lookup. Per-instance rather than
+    /// a uniform for the same reason as `key_light`.
+    #[live]
+    pub light_vp: Mat4f,
+    /// x,y = one shadow-map texel in UV; z = constant depth bias;
+    /// w = slope-scaled bias coefficient.
+    #[live(vec4(0.0005, 0.0005, 0.0015, 0.006))]
+    pub shadow_texel: Vec4f,
+    /// How dark a fully occluded fragment goes (0 = shadows off).
+    #[live(0.75)]
+    pub shadow_strength: f32,
     #[live(1.0)]
     pub depth_clip: f32,
 }
 
 impl DrawRobotMesh {
+    pub fn draw(&mut self, cx: &mut CxDraw, geometry_id: GeometryId) {
+        self.draw_vars.geometry_id = Some(geometry_id);
+        if self.draw_vars.can_instance() {
+            let new_area = cx.add_instance(&self.draw_vars);
+            self.draw_vars.area = cx.update_area_refs(self.draw_vars.area, new_area);
+        }
+    }
+}
+
+
+/// Depth-only draw for the shadow pass. Carries just enough to place the
+/// geometry in the light's clip space — no material, no lighting.
+#[derive(Script, ScriptHook, Debug)]
+#[repr(C)]
+pub struct DrawShadowDepth {
+    #[deref]
+    pub draw_vars: DrawVars,
+    #[live]
+    pub transform: Mat4f,
+    #[live(vec3(1.0, 1.0, 1.0))]
+    pub scale: Vec3f,
+    #[live]
+    pub light_vp: Mat4f,
+}
+
+impl DrawShadowDepth {
     pub fn draw(&mut self, cx: &mut CxDraw, geometry_id: GeometryId) {
         self.draw_vars.geometry_id = Some(geometry_id);
         if self.draw_vars.can_instance() {
