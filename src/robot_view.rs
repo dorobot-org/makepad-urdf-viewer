@@ -966,20 +966,24 @@ impl RobotView {
         self.draw_mesh.light_vp = self.light_vp;
         let texel = 1.0 / SHADOW_MAP_SIZE as f32;
         self.draw_mesh.shadow_texel = vec4(texel, texel, 0.0015, 0.004);
-        // Metal samples a render target with V matching clip space, so no
-        // flip; WebGL samples it inverted — the same asymmetry the composite
-        // shader documents and corrects for. Verified by A/B: flipping on
-        // Metal detaches the shadow from the caster's feet.
-        // Shadows default ON (URDF_SHADOW=0 disables). Registration was
-        // proven with the overhead-light oracle: vertical light puts the
-        // silhouette exactly under the footprint, hand shadows land beneath
-        // the hands, and the robot shows no false self-occlusion.
+        // The shadow pass rasterises RAW light_vp clip coordinates, without
+        // the per-backend projection fixup makepad bakes into its own camera
+        // matrices. Metal rasterises NDC +Y to row 0 (top-left origin) but
+        // samples v=0 at row 0, so the lookup must flip V; GL's bottom-left
+        // origin makes write and read agree, so wasm must NOT flip. This is
+        // the OPPOSITE of the composite pass's rule, whose source is a
+        // makepad-projected target with the convention already baked in.
+        // Proven with an oblique light: unflipped, the lookup mirrors the map
+        // across the light-view centreline — through the feet — painting an
+        // upside-down silhouette on the near floor; flipped, the silhouette
+        // lies flat with the head at the far end and feet anchored.
+        // Shadows default ON (URDF_SHADOW=0 disables).
         let shadows_on = std::env::var("URDF_SHADOW").map(|v| v != "0").unwrap_or(true);
         self.draw_mesh.shadow_strength = if shadows_on { 0.75 } else { 0.0 };
         self.draw_grid.shadow_strength = self.draw_mesh.shadow_strength;
         let flip = std::env::var("URDF_SHADOW_FLIP")
             .map(|v| v != "0")
-            .unwrap_or(cfg!(target_arch = "wasm32"));
+            .unwrap_or(!cfg!(target_arch = "wasm32"));
         self.draw_mesh.shadow_flip = if flip { 1.0 } else { 0.0 };
         self.draw_mesh.draw_vars.set_texture(0, &self.shadow_texture);
 
