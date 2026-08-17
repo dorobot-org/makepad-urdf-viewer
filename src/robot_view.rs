@@ -10,7 +10,7 @@
 use makepad_widgets::*;
 use makepad_xr::scene::*;
 
-use crate::render::draw::{DrawGridPlane, DrawRobotMesh, DrawSceneComposite, DrawShadowDepth};
+use crate::render::draw::{DrawGridPlane, DrawRobotMesh, DrawRobotReflect, DrawSceneComposite, DrawShadowDepth};
 use crate::robot::{load_any, load_robot, ForwardKinematics, Robot};
 
 script_mod! {
@@ -26,15 +26,19 @@ script_mod! {
         // model to show; leave empty and call `load_robot` from Rust instead
         urdf: ""
         assets: ""
-        // environment
+        // environment — the menagerie G1 palette: blue-grey gradient sky,
+        // dark blue checker ground with light cell edges, mirror floor.
         show_grid: true
-        sky_horizon: #xFFFBFB
-        sky_zenith: #xFAE5E7
-        ground_color: #xFFFFC5
-        grid_color: #x6B6A3D
+        sky_horizon: #x26404F
+        sky_zenith: #x4D80B3
+        ground_color: #x334D66
+        ground2_color: #x1A3350
+        grid_color: #xB3B3B3
+        floor_reflectance: 0.22
         draw_bg: mod.draw.DrawSceneComposite{}
         draw_mesh: mod.draw.DrawRobotMesh{}
         draw_shadow: mod.draw.DrawShadowDepth{}
+        draw_reflect: mod.draw.DrawRobotReflect{}
         draw_grid: mod.draw.DrawGridPlane{}
         camera: mod.widgets.XrCamera{
             fov_y: 45.0
@@ -160,8 +164,14 @@ pub struct RobotView {
     sky_zenith: Vec4f,
     #[live(vec4(1.0, 1.0, 0.773, 1.0))]
     ground_color: Vec4f,
+    /// second checker tone (equal to ground_color = no checker)
+    #[live(vec4(1.0, 1.0, 0.773, 1.0))]
+    ground2_color: Vec4f,
     #[live(vec4(0.42, 0.41, 0.24, 1.0))]
     grid_color: Vec4f,
+    /// mirror-floor blend weight (0 = no reflection), flat scenes only
+    #[live(0.0)]
+    floor_reflectance: f32,
     #[live]
     draw_bg: DrawSceneComposite,
     #[live]
@@ -170,6 +180,8 @@ pub struct RobotView {
     draw_grid: DrawGridPlane,
     #[live]
     draw_shadow: DrawShadowDepth,
+    #[live]
+    draw_reflect: DrawRobotReflect,
     #[live(vec4(0.051, 0.067, 0.091, 1.0))]
     clear_color: Vec4f,
     #[live]
@@ -311,23 +323,23 @@ impl RobotView {
         self.shadow_texture = Texture::new_with_format(
             cx,
             TextureFormat::RenderBGRAu8 {
-                size: TextureSize::Fixed { width: SHADOW_MAP_SIZE, height: SHADOW_MAP_SIZE },
+                size: TextureSize::Auto,
                 initial: true,
             },
         );
         self.shadow_depth_texture = Texture::new_with_format(
             cx,
             TextureFormat::DepthD32 {
-                size: TextureSize::Fixed { width: SHADOW_MAP_SIZE, height: SHADOW_MAP_SIZE },
+                size: TextureSize::Auto,
                 initial: true,
             },
         );
         self.shadow_pass.set_color_texture(
             cx,
             &self.shadow_texture,
-            // Cleared to 1.0 = "nothing occludes here", so anything the light
-            // never rendered stays lit.
-            DrawPassClearColor::ClearWith(vec4(1.0, 1.0, 1.0, 1.0)),
+            // Cleared to hi=1, lo=1 (alpha 1 — see the encoder note): decodes
+            // to just past the far plane, so unrendered texels never occlude.
+            DrawPassClearColor::ClearWith(vec4(1.0, 1.0, 0.0, 1.0)),
         );
         self.shadow_pass.set_depth_texture(
             cx,
@@ -872,9 +884,15 @@ impl RobotView {
         }
         let light_vp = self.compute_light_vp();
         self.light_vp = m4(light_vp);
+        // set_size takes LOGICAL pixels and the platform multiplies by the
+        // dpi factor. A Fixed-size texture therefore disagreed with the pass
+        // on retina (2048 texture, 4096 viewport): the map was rasterised at
+        // twice the target's size, so every lookup landed scaled — the
+        // registration error. Auto textures + a logical size keep them equal.
+        let dpi = cx.cx.current_dpi_factor().max(1.0);
         self.shadow_pass.set_size(cx.cx, DVec2 {
-            x: SHADOW_MAP_SIZE as f64,
-            y: SHADOW_MAP_SIZE as f64,
+            x: SHADOW_MAP_SIZE as f64 / dpi,
+            y: SHADOW_MAP_SIZE as f64 / dpi,
         });
         cx.make_child_pass(&self.shadow_pass);
         cx.begin_pass(&self.shadow_pass, None);
@@ -922,6 +940,20 @@ impl RobotView {
         let mut dbg_drawn = 0usize;
         let mut dbg_can = 0usize;
 
+        // Verification hooks: URDF_LIGHT_PITCH / URDF_LIGHT_YAW pin the lamp
+        // (radians). Pitch 1.5 is the registration oracle — a near-vertical
+        // light must drop the shadow exactly onto the footprint, so any
+        // offset there is a projection bug, not a viewing-angle judgement.
+        if let Ok(v) = std::env::var("URDF_LIGHT_PITCH") {
+            if let Ok(pitch) = v.parse::<f32>() {
+                self.light_pitch = pitch;
+            }
+        }
+        if let Ok(v) = std::env::var("URDF_LIGHT_YAW") {
+            if let Ok(yaw) = v.parse::<f32>() {
+                self.light_yaw = yaw;
+            }
+        }
         let l = self.light_vec();
         self.draw_mesh.key_light = vec4(l[0], l[1], l[2], if self.light_on { 1.0 } else { 0.0 });
         // Ambient follows the environment the composite actually paints, so a
@@ -933,7 +965,22 @@ impl RobotView {
         // size so the PCF taps land on neighbouring texels.
         self.draw_mesh.light_vp = self.light_vp;
         let texel = 1.0 / SHADOW_MAP_SIZE as f32;
-        self.draw_mesh.shadow_texel = vec4(texel, texel, 0.008, 0.03);
+        self.draw_mesh.shadow_texel = vec4(texel, texel, 0.0015, 0.004);
+        // Metal samples a render target with V matching clip space, so no
+        // flip; WebGL samples it inverted — the same asymmetry the composite
+        // shader documents and corrects for. Verified by A/B: flipping on
+        // Metal detaches the shadow from the caster's feet.
+        // Shadows default ON (URDF_SHADOW=0 disables). Registration was
+        // proven with the overhead-light oracle: vertical light puts the
+        // silhouette exactly under the footprint, hand shadows land beneath
+        // the hands, and the robot shows no false self-occlusion.
+        let shadows_on = std::env::var("URDF_SHADOW").map(|v| v != "0").unwrap_or(true);
+        self.draw_mesh.shadow_strength = if shadows_on { 0.75 } else { 0.0 };
+        self.draw_grid.shadow_strength = self.draw_mesh.shadow_strength;
+        let flip = std::env::var("URDF_SHADOW_FLIP")
+            .map(|v| v != "0")
+            .unwrap_or(cfg!(target_arch = "wasm32"));
+        self.draw_mesh.shadow_flip = if flip { 1.0 } else { 0.0 };
         self.draw_mesh.draw_vars.set_texture(0, &self.shadow_texture);
 
         let sky_amb = 0.23; // 0.46 of the horizon/zenith average
@@ -1001,6 +1048,7 @@ impl RobotView {
         let grid_geom = self.ensure_grid_geometry(cx.cx);
         self.draw_grid.color = self.grid_color;
         self.draw_grid.soil_color = self.ground_color;
+        self.draw_grid.soil2_color = self.ground2_color;
         // the plane must fade into the same colour the sky shows there
         self.draw_grid.haze_color = self.sky_horizon;
         self.draw_grid.extent = self.grid_extent;
@@ -1009,13 +1057,39 @@ impl RobotView {
         self.draw_grid.px_scale = self.px_scale;
         self.draw_grid.light_vp = self.light_vp;
         let gtexel = 1.0 / SHADOW_MAP_SIZE as f32;
-        self.draw_grid.shadow_texel = vec4(gtexel, gtexel, 0.008, 0.0);
+        self.draw_grid.shadow_texel = vec4(gtexel, gtexel, 0.0015, 0.0);
+        self.draw_grid.shadow_flip = self.draw_mesh.shadow_flip;
         self.draw_grid.draw_vars.set_texture(0, &self.shadow_texture);
         self.draw_grid.debug_shadow =
             if std::env::var("URDF_SHADOW_DEBUG").is_ok() { 1.0 } else { 0.0 };
         self.draw_grid.depth_clip = 0.0;
         if self.show_grid {
             self.draw_grid.draw(cx, grid_geom);
+            // Mirror floor: the robot reflected through the ground plane,
+            // blended at the material reflectance — MuJoCo's reflectance look.
+            // Flat scenes only; a heightfield has no mirror plane.
+            if self.floor_reflectance > 0.001 && self.terrain_geometry.is_none() {
+                let gy = self.grid_y;
+                let mirror = glam::Mat4::from_translation(glam::Vec3::new(0.0, 2.0 * gy, 0.0))
+                    * glam::Mat4::from_scale(glam::Vec3::new(1.0, -1.0, 1.0));
+                self.draw_reflect.key_light = self.draw_mesh.key_light;
+                self.draw_reflect.ambient_sky = self.draw_mesh.ambient_sky;
+                self.draw_reflect.ambient_ground = self.draw_mesh.ambient_ground;
+                self.draw_reflect.reflect_alpha = self.floor_reflectance;
+                self.draw_reflect.scale = vec3(1.0, 1.0, 1.0);
+                if let Some(robot) = &self.robot {
+                    for (i, link) in robot.links.iter().enumerate() {
+                        let Some(Some(slot)) = self.geometries.get(i) else { continue };
+                        let Some(geometry) = self.geometry_pool.get(*slot) else { continue };
+                        let Some(transform) = robot.get_link_transform(i) else { continue };
+                        let base = link.color.unwrap_or(DEFAULT_LINK_COLOR);
+                        self.draw_reflect.color = vec4(base[0], base[1], base[2], 1.0);
+                        self.draw_reflect.transform = m4(mirror * world * transform);
+                        let gid = geometry.geometry_id();
+                        self.draw_reflect.draw(cx, gid);
+                    }
+                }
+            }
         }
 
         if let Some(previous_world) = previous_world {

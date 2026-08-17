@@ -43,7 +43,78 @@ script_mod! {
         }
 
         pixel: fn() -> vec4f {
-            return vec4(self.v_depth, self.v_depth, self.v_depth, 1.0)
+            // 16-bit depth packed into G (hi byte) and A (lo byte): an 8-bit
+            // map quantises at 1/255 = 0.004, the same size as a usable bias,
+            // so single-channel depth acnes over every surface. G and A are
+            // the two channels a BGRA/RGBA swap leaves alone, so the encoding
+            // survives whichever order the backend hands back.
+            // Alpha must stay 1.0: the pass blends premultiplied even with
+            // alpha_blend:false (harmless for every shader that writes a=1 —
+            // blending degenerates to replace — but data in alpha gets mixed
+            // with the clear colour; measured as depth-contour scribbles in
+            // the map). Lo rides in R with B zero, so the r/b swap on other
+            // backends still yields lo as smp.x + smp.z.
+            let d = clamp(self.v_depth, 0.0, 1.0)
+            let hi = floor(d * 255.0) / 255.0
+            let lo = clamp(fract(d * 255.0), 0.0, 1.0)
+            return vec4(lo, hi, 0.0, 1.0)
+        }
+
+        fragment: fn() {
+            self.fb0 = self.pixel()
+        }
+    }
+
+    // Planar reflection of the robot on the ground plane — MuJoCo's
+    // reflectance look. Same vertex path as the lit mesh (the reflection
+    // matrix rides in `transform`); lighting is the hemisphere + key only,
+    // blended over the already-drawn ground at `reflect_alpha`, premultiplied
+    // for the ONE / ONE_MINUS_SRC_ALPHA pass blend.
+    mod.draw.DrawRobotReflect = mod.std.set_type_default() do #(DrawRobotReflect::script_shader(vm)){
+        alpha_blend: true
+        depth_write: false
+        backface_culling: false
+        vertex_pos: vertex_position(vec4f)
+        fb0: fragment_output(0, vec4f)
+        draw_call: uniform_buffer(draw.DrawCallUniforms)
+        draw_pass: uniform_buffer(draw.DrawPassUniforms)
+        draw_list: uniform_buffer(draw.DrawListUniforms)
+        geom: vertex_buffer(geom.IcoVertex, geom.IcoGeom)
+        v_world: varying(vec3f)
+        v_normal: varying(vec3f)
+
+        vertex: fn() {
+            let local_pos = vec3(
+                self.geom.pos.x * self.scale.x,
+                self.geom.pos.y * self.scale.y,
+                self.geom.pos.z * self.scale.z
+            )
+            let world = self.transform * vec4(local_pos.x, local_pos.y, local_pos.z, 1.0)
+            let world_normal = normalize((self.transform * vec4(self.geom.normal.x, self.geom.normal.y, self.geom.normal.z, 0.0)).xyz)
+            self.v_world = world.xyz
+            self.v_normal = world_normal
+            let view_pos = self.draw_pass.camera_view * world
+            self.vertex_pos = self.draw_pass.camera_projection * view_pos
+        }
+
+        pixel: fn() -> vec4f {
+            let camera_world = self.draw_pass.camera_inv * vec4(0.0, 0.0, 0.0, 1.0)
+            let cw = vec3(camera_world.x, camera_world.y, camera_world.z)
+            let view_dir = normalize(cw - self.v_world)
+            let normal_in = normalize(self.v_normal)
+            let normal = normal_in * sign(dot(normal_in, view_dir))
+            let key_dir = normalize(self.key_light.xyz)
+            let sky = self.ambient_sky.xyz
+            let ground = self.ambient_ground.xyz
+            let hemi = mix(ground, sky, normal.y * 0.5 + 0.5)
+            let key = max(dot(normal, key_dir), 0.0)
+            let head = max(dot(normal, view_dir), 0.0) * 0.55
+            let kg = 0.35 + 0.55 * self.key_light.w
+            let lit_r = self.color.x * (hemi.x + key * kg + head)
+            let lit_g = self.color.y * (hemi.y + key * kg + head)
+            let lit_b = self.color.z * (hemi.z + key * kg + head)
+            let a = self.reflect_alpha
+            return vec4(lit_r * a, lit_g * a, lit_b * a, a)
         }
 
         fragment: fn() {
@@ -122,7 +193,10 @@ script_mod! {
             let lit = 1.0 - clamp(dot(normal, key_dir), 0.0, 1.0)
             let bias = self.shadow_texel.z + self.shadow_texel.w * lit
             let sc = self.light_vp * vec4(self.v_world.x, self.v_world.y, self.v_world.z, 1.0)
-            let suv = vec2(sc.x * 0.5 + 0.5, 0.5 - sc.y * 0.5)
+            // Render-target V orientation differs by backend; carry it as a
+            // value so it can be verified rather than assumed.
+            let suv = vec2(sc.x * 0.5 + 0.5,
+                mix(sc.y * 0.5 + 0.5, 0.5 - sc.y * 0.5, self.shadow_flip))
             let sdepth = sc.z
             let mut shade = 0.0
             let mut taps = 0.0
@@ -135,7 +209,11 @@ script_mod! {
                             (float(ox) - 1.0) * self.shadow_texel.x,
                             (float(oy) - 1.0) * self.shadow_texel.y
                         )
-                        let occluder = self.shadow_map.sample(vec2(suv.x + o.x, suv.y + o.y)).x
+                        // Nearest, not linear: filtering a two-channel packed
+                        // depth interpolates hi and lo independently and
+                        // invents depths where the hi byte steps.
+                        let smp = self.shadow_map.sample_nearest(vec2(suv.x + o.x, suv.y + o.y))
+                        let occluder = smp.y + (smp.x + smp.z) / 255.0
                         shade = shade + step(occluder + bias, sdepth)
                         taps = taps + 1.0
                     }
@@ -151,11 +229,17 @@ script_mod! {
             // warm key + cool fill diffuse; the lamp lifts the key
             let key = max(dot(normal, key_dir), 0.0) * shadow
             let fill = max(dot(normal, fill_dir), 0.0)
+            // Camera headlight, MuJoCo's dominant light: white diffuse from
+            // the eye (mjModel.vis.headlight diffuse ~0.6). Without it the
+            // camera-facing surfaces sit in ambient only and the robot reads
+            // charcoal in the dark-sky palette.
+            let head = max(dot(normal, view_dir), 0.0)
             let key_gain = 0.35 + 0.55 * lamp
             let diffuse = self.color.xyz * (
                 hemi
                 + key * vec3(1.0, 0.95, 0.86) * key_gain
                 + fill * vec3(0.62, 0.64, 0.70) * 0.22
+                + head * vec3(0.55, 0.55, 0.55)
             )
 
             // blinn specular from both lights
@@ -265,8 +349,17 @@ script_mod! {
             // Scalar arithmetic only: multiplying a let-bound vec3 by a float
             // returns garbage in this script-shader dialect (verified — the
             // same expression written with a vec3 literal renders correctly).
+            // MuJoCo-style checker at the major-cell scale: two soil tones
+            // alternating per 5x5 minor cell, the same look menagerie's
+            // builtin="checker" ground gives the G1 scenes. All scalar math —
+            // vec-times-scalar on let-bound vecs is the documented landmine.
+            let cpar = floor(self.v_world.x / s5) + floor(self.v_world.z / s5)
+            let checker = fract(cpar * 0.5) * 2.0
+            let soil_r = mix(self.soil_color.x, self.soil2_color.x, checker)
+            let soil_g = mix(self.soil_color.y, self.soil2_color.y, checker)
+            let soil_b = mix(self.soil_color.z, self.soil2_color.z, checker)
             let line_a = (minor * 0.55 + major * 0.85) * fade
-            let soil_a = 0.55 * fade * (1.0 - line_a)
+            let soil_a = 0.85 * fade * (1.0 - line_a)
             let alpha = soil_a + line_a
             // Same haze as the sky dome, applied to the COLOUR only (folding
             // it into alpha instead let the term go out of range and swallowed
@@ -285,7 +378,8 @@ script_mod! {
             // samples the same map the meshes do. Flat and facing straight up,
             // so a constant bias is enough — no slope term needed.
             let sc = self.light_vp * vec4(self.v_world.x, self.v_world.y, self.v_world.z, 1.0)
-            let suv = vec2(sc.x * 0.5 + 0.5, 0.5 - sc.y * 0.5)
+            let suv = vec2(sc.x * 0.5 + 0.5,
+                mix(sc.y * 0.5 + 0.5, 0.5 - sc.y * 0.5, self.shadow_flip))
             let sdepth = sc.z
             let mut shade = 0.0
             let mut taps = 0.0
@@ -296,7 +390,8 @@ script_mod! {
                             (float(ox) - 1.0) * self.shadow_texel.x,
                             (float(oy) - 1.0) * self.shadow_texel.y
                         )
-                        let occ = self.shadow_map.sample(vec2(suv.x + o.x, suv.y + o.y)).x
+                        let smp = self.shadow_map.sample_nearest(vec2(suv.x + o.x, suv.y + o.y))
+                        let occ = smp.y + (smp.x + smp.z) / 255.0
                         shade = shade + step(occ + self.shadow_texel.z, sdepth)
                         taps = taps + 1.0
                     }
@@ -319,9 +414,9 @@ script_mod! {
 
             // premultiplied output for makepad's ONE / ONE_MINUS_SRC_ALPHA blend
             return vec4(
-                mix(self.soil_color.x * soil_s + self.color.x * line_s, self.haze_color.x * alpha, hz),
-                mix(self.soil_color.y * soil_s + self.color.y * line_s, self.haze_color.y * alpha, hz),
-                mix(self.soil_color.z * soil_s + self.color.z * line_s, self.haze_color.z * alpha, hz),
+                mix(soil_r * soil_s + self.color.x * line_s, self.haze_color.x * alpha, hz),
+                mix(soil_g * soil_s + self.color.y * line_s, self.haze_color.y * alpha, hz),
+                mix(soil_b * soil_s + self.color.z * line_s, self.haze_color.z * alpha, hz),
                 alpha
             )
         }
@@ -489,6 +584,9 @@ pub struct DrawGridPlane {
     /// ground fill colour (the grid lines use `color`)
     #[live(vec4(1.0, 1.0, 0.773, 1.0))]
     pub soil_color: Vec4f,
+    /// second checker tone; equal to `soil_color` = no checker
+    #[live(vec4(1.0, 1.0, 0.773, 1.0))]
+    pub soil2_color: Vec4f,
     /// what the ground fades into at the horizon — must match the sky there,
     /// or the plane ends in a band of the wrong colour
     #[live(vec4(1.0, 0.985, 0.985, 1.0))]
@@ -507,6 +605,10 @@ pub struct DrawGridPlane {
     pub shadow_texel: Vec4f,
     #[live(0.75)]
     pub shadow_strength: f32,
+    /// 1 = flip V when sampling the shadow map (backend-dependent; Metal
+    /// needs none, WebGL does).
+    #[live(0.0)]
+    pub shadow_flip: f32,
     /// >0.5 paints the ground with the raw shadow-map sample instead of the
     /// grid, so an empty map (uniform white) is distinguishable from a bad
     /// projection (map content in the wrong place). URDF_SHADOW_DEBUG=1.
@@ -595,6 +697,10 @@ pub struct DrawRobotMesh {
     /// How dark a fully occluded fragment goes (0 = shadows off).
     #[live(0.75)]
     pub shadow_strength: f32,
+    /// 1 = flip V when sampling the shadow map (backend-dependent; Metal
+    /// needs none, WebGL does).
+    #[live(0.0)]
+    pub shadow_flip: f32,
     #[live(1.0)]
     pub depth_clip: f32,
 }
@@ -626,6 +732,41 @@ pub struct DrawShadowDepth {
 }
 
 impl DrawShadowDepth {
+    pub fn draw(&mut self, cx: &mut CxDraw, geometry_id: GeometryId) {
+        self.draw_vars.geometry_id = Some(geometry_id);
+        if self.draw_vars.can_instance() {
+            let new_area = cx.add_instance(&self.draw_vars);
+            self.draw_vars.area = cx.update_area_refs(self.draw_vars.area, new_area);
+        }
+    }
+}
+
+
+/// Instance data for the planar-reflection draw. `transform` carries the
+/// reflection matrix folded with the link transform.
+#[derive(Script, ScriptHook, Debug)]
+#[repr(C)]
+pub struct DrawRobotReflect {
+    #[deref]
+    pub draw_vars: DrawVars,
+    #[live]
+    pub color: Vec4f,
+    #[live]
+    pub transform: Mat4f,
+    #[live(vec3(1.0, 1.0, 1.0))]
+    pub scale: Vec3f,
+    #[live(vec4(-0.35, 0.84, 0.42, 0.0))]
+    pub key_light: Vec4f,
+    #[live(vec4(0.46, 0.45, 0.43, 1.0))]
+    pub ambient_sky: Vec4f,
+    #[live(vec4(0.40, 0.39, 0.30, 1.0))]
+    pub ambient_ground: Vec4f,
+    /// Blend weight of the mirror image — MuJoCo's material reflectance.
+    #[live(0.2)]
+    pub reflect_alpha: f32,
+}
+
+impl DrawRobotReflect {
     pub fn draw(&mut self, cx: &mut CxDraw, geometry_id: GeometryId) {
         self.draw_vars.geometry_id = Some(geometry_id);
         if self.draw_vars.can_instance() {
