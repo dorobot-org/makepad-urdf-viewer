@@ -174,7 +174,6 @@ script_mod! {
             // key = the draggable lamp (xyz direction, w = lamp switched on)
             let key_dir = normalize(self.key_light.xyz)
             let lamp = self.key_light.w
-            let fill_dir = normalize(vec3(0.58, 0.35, -0.62))
 
             // Hemisphere ambient, driven by the SAME colours the composite
             // paints the environment with (per-instance, because set_uniform
@@ -226,36 +225,99 @@ script_mod! {
             // scene with no shadows in it.
             let shadow = 1.0 - shade * self.shadow_strength
 
-            // warm key + cool fill diffuse; the lamp lifts the key
-            let key = max(dot(normal, key_dir), 0.0) * shadow
-            let fill = max(dot(normal, fill_dir), 0.0)
-            // Camera headlight, MuJoCo's dominant light: white diffuse from
-            // the eye (mjModel.vis.headlight diffuse ~0.6). Without it the
-            // camera-facing surfaces sit in ambient only and the robot reads
-            // charcoal in the dark-sky palette.
-            let head = max(dot(normal, view_dir), 0.0)
+            // ---- Cook-Torrance GGX + analytic image-based lighting. The
+            // "image" is the procedural environment itself — the same
+            // gradient sky and ground the composite paints — so the robot
+            // reflects the world it stands in without any texture assets.
+            //
+            // Scalar, per-channel arithmetic throughout — the house style of
+            // the checker in DrawGridPlane and of DrawRobotReflect, and easy
+            // to reason about factor by factor. When a lighting term looks
+            // missing, paint the factors (URDF_PBR_DEBUG below) before
+            // blaming the math: the terrain once read keyless here because
+            // the LAMP was off (key_gain 0.35), not because anything in this
+            // expression dropped it.
+            let rough = clamp(self.roughness, 0.04, 1.0)
+            let met = clamp(self.metallic, 0.0, 1.0)
+            let alb_r = self.color.x
+            let alb_g = self.color.y
+            let alb_b = self.color.z
+            let nov = max(dot(normal, view_dir), 0.001)
+            // reflectance at normal incidence: 4% dielectric, albedo metal
+            let f0_r = 0.04 * (1.0 - met) + alb_r * met
+            let f0_g = 0.04 * (1.0 - met) + alb_g * met
+            let f0_b = 0.04 * (1.0 - met) + alb_b * met
+            let a = rough * rough
+            let a2 = a * a
+            let kk = (rough + 1.0) * (rough + 1.0) / 8.0
+
+            // -- direct: the draggable key lamp
+            let key = max(dot(normal, key_dir), 0.0)
             let key_gain = 0.35 + 0.55 * lamp
-            let diffuse = self.color.xyz * (
-                hemi
-                + key * vec3(1.0, 0.95, 0.86) * key_gain
-                + fill * vec3(0.62, 0.64, 0.70) * 0.22
-                + head * vec3(0.55, 0.55, 0.55)
+            let kterm = key * key_gain * shadow
+            let h = normalize(key_dir + view_dir)
+            let noh = max(dot(normal, h), 0.0)
+            let voh = max(dot(view_dir, h), 0.0)
+            let dist_key = a2 / (3.14159 * pow(noh * noh * (a2 - 1.0) + 1.0, 2.0))
+            let geo_key = (nov / (nov * (1.0 - kk) + kk)) * (key / (key * (1.0 - kk) + kk))
+            let fp = pow(1.0 - voh, 5.0)
+            let sk = dist_key * geo_key / max(4.0 * nov * key, 0.001) * kterm
+            let spec_key_r = (f0_r + (1.0 - f0_r) * fp) * sk
+            let spec_key_g = (f0_g + (1.0 - f0_g) * fp) * sk
+            let spec_key_b = (f0_b + (1.0 - f0_b) * fp) * sk
+
+            // -- direct: the camera headlight, MuJoCo's dominant light. Its
+            // half-vector IS the view vector, so GGX degenerates to a soft
+            // camera-facing sheen rather than a hotspot.
+            let head = max(dot(normal, view_dir), 0.0)
+            let dist_head = a2 / (3.14159 * pow(nov * nov * (a2 - 1.0) + 1.0, 2.0))
+            let sh = dist_head / max(4.0 * nov, 0.001) * head * 0.30
+            let hterm = head * 0.55
+
+            // -- diffuse: hemisphere irradiance plus the two direct lights,
+            // energy split against the specular by metalness
+            let kd = 1.0 - met
+            let diff_r = alb_r * kd * (hemi.x + kterm * 1.00 + hterm)
+            let diff_g = alb_g * kd * (hemi.y + kterm * 0.95 + hterm)
+            let diff_b = alb_b * kd * (hemi.z + kterm * 0.86 + hterm)
+
+            // -- specular IBL: mirror the eye ray through the surface into
+            // the procedural sky. The horizon softens and the whole lookup
+            // blurs toward flat irradiance as roughness rises — the analytic
+            // stand-in for a prefiltered mip chain.
+            let two_nv = 2.0 * dot(normal, view_dir)
+            let refl_y = normal.y * two_nv - view_dir.y
+            let up = clamp(refl_y, -1.0, 1.0)
+            let upc = clamp(up, 0.0, 1.0)
+            let soft = 0.03 + 0.35 * rough
+            let horiz = smoothstep(0.0 - soft, soft, up)
+            let blur = rough * 0.85
+            let env_r = mix(mix(self.env_ground.x, mix(self.env_horizon.x, self.env_zenith.x, upc), horiz), hemi.x, blur)
+            let env_g = mix(mix(self.env_ground.y, mix(self.env_horizon.y, self.env_zenith.y, upc), horiz), hemi.y, blur)
+            let env_b = mix(mix(self.env_ground.z, mix(self.env_horizon.z, self.env_zenith.z, upc), horiz), hemi.z, blur)
+            // split-sum environment BRDF, Karis' analytic fit (no LUT here)
+            let rx = 1.0 - rough
+            let a004 = min(rx * rx, pow(2.0, 0.0 - 9.28 * nov)) * rx + (0.0425 - 0.0275 * rough)
+            let ab_a = 1.04 - 0.572 * rough - 1.04 * a004
+            let ab_b = 1.04 * a004 + 0.022 * rough - 0.04
+            // Grazing Fresnel makes this the silhouette lift the old ad-hoc
+            // rim term faked; ambient like `hemi`, so not sun-shadowed.
+            let spec_env_r = env_r * (f0_r * ab_a + ab_b)
+            let spec_env_g = env_g * (f0_g * ab_a + ab_b)
+            let spec_env_b = env_b * (f0_b * ab_a + ab_b)
+
+            // URDF_PBR_DEBUG: raw lighting factors as colours — r = key N.L,
+            // g = lamp switch, b = shadow. Terrain vs robot discrepancies
+            // point at the exact dead factor instead of a theory.
+            if self.debug_mode > 0.5 {
+                return vec4(key, lamp, shadow, 1.0)
+            }
+            return vec4(
+                diff_r + spec_key_r + sh * f0_r + spec_env_r,
+                diff_g + spec_key_g + sh * f0_g + spec_env_g,
+                diff_b + spec_key_b + sh * f0_b + spec_env_b,
+                self.color.w
             )
-
-            // blinn specular from both lights
-            let half_key = normalize(key_dir + view_dir)
-            let half_fill = normalize(fill_dir + view_dir)
-            let spec_gain = (0.80 + 0.60 * lamp) * shadow
-            let spec = (pow(max(dot(normal, half_key), 0.0), 48.0) * 0.45
-                + pow(max(dot(normal, half_fill), 0.0), 24.0) * 0.12) * spec_gain
-
-            // cool rim to lift silhouettes off the dark background
-            let rim = pow(max(1.0 - max(dot(normal, view_dir), 0.0), 0.0), 3.0)
-
-            let color = diffuse
-                + vec3(1.0, 0.98, 0.95) * spec
-                + vec3(0.26, 0.23, 0.20) * rim
-            return vec4(color, self.color.w)
         }
 
         fragment: fn() {
@@ -605,9 +667,10 @@ pub struct DrawGridPlane {
     pub shadow_texel: Vec4f,
     #[live(0.75)]
     pub shadow_strength: f32,
-    /// 1 = flip V when sampling the shadow map (backend-dependent; Metal
-    /// needs none, WebGL does).
-    #[live(0.0)]
+    /// 1 = flip V when sampling the shadow map. The map is rasterised from a
+    /// raw clip matrix, so Metal (top-left origin) needs the flip and WebGL
+    /// does not — the opposite of makepad-projected passes.
+    #[live(1.0)]
     pub shadow_flip: f32,
     /// >0.5 paints the ground with the raw shadow-map sample instead of the
     /// grid, so an empty map (uniform white) is distinguishable from a bad
@@ -686,6 +749,27 @@ pub struct DrawRobotMesh {
     /// Lower hemisphere ambient — the bounce off the ground plane.
     #[live(vec4(0.40, 0.39, 0.30, 1.0))]
     pub ambient_ground: Vec4f,
+    /// The environment the specular IBL mirrors: raw sky-at-horizon colour —
+    /// unlike `ambient_sky`, which is pre-averaged irradiance, a mirror
+    /// reflection needs the actual gradient.
+    #[live(vec4(0.15, 0.25, 0.31, 1.0))]
+    pub env_horizon: Vec4f,
+    /// Sky colour overhead, the other end of the reflected gradient.
+    #[live(vec4(0.30, 0.50, 0.70, 1.0))]
+    pub env_zenith: Vec4f,
+    /// What a downward reflection ray hits.
+    #[live(vec4(0.20, 0.30, 0.40, 1.0))]
+    pub env_ground: Vec4f,
+    /// Microfacet roughness (0.04 = polished, 1 = matte).
+    #[live(0.42)]
+    pub roughness: f32,
+    /// 0 = dielectric (F0 4%), 1 = metal (F0 = albedo).
+    #[live(0.10)]
+    pub metallic: f32,
+    /// >0.5 paints raw lighting factors (r = key N.L, g = lamp, b = shadow)
+    /// instead of shading. URDF_PBR_DEBUG=1.
+    #[live(0.0)]
+    pub debug_mode: f32,
     /// Light view-projection for the shadow lookup. Per-instance rather than
     /// a uniform for the same reason as `key_light`.
     #[live]
@@ -697,9 +781,10 @@ pub struct DrawRobotMesh {
     /// How dark a fully occluded fragment goes (0 = shadows off).
     #[live(0.75)]
     pub shadow_strength: f32,
-    /// 1 = flip V when sampling the shadow map (backend-dependent; Metal
-    /// needs none, WebGL does).
-    #[live(0.0)]
+    /// 1 = flip V when sampling the shadow map. The map is rasterised from a
+    /// raw clip matrix, so Metal (top-left origin) needs the flip and WebGL
+    /// does not — the opposite of makepad-projected passes.
+    #[live(1.0)]
     pub shadow_flip: f32,
     #[live(1.0)]
     pub depth_clip: f32,

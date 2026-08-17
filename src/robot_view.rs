@@ -35,6 +35,8 @@ script_mod! {
         ground2_color: #x1A3350
         grid_color: #xB3B3B3
         floor_reflectance: 0.22
+        material_roughness: 0.42
+        material_metallic: 0.10
         draw_bg: mod.draw.DrawSceneComposite{}
         draw_mesh: mod.draw.DrawRobotMesh{}
         draw_shadow: mod.draw.DrawShadowDepth{}
@@ -172,6 +174,12 @@ pub struct RobotView {
     /// mirror-floor blend weight (0 = no reflection), flat scenes only
     #[live(0.0)]
     floor_reflectance: f32,
+    /// robot-surface microfacet roughness (0.04 polished … 1 matte)
+    #[live(0.42)]
+    material_roughness: f32,
+    /// robot-surface metalness (0 dielectric … 1 metal)
+    #[live(0.10)]
+    material_metallic: f32,
     #[live]
     draw_bg: DrawSceneComposite,
     #[live]
@@ -253,7 +261,10 @@ pub struct RobotView {
     light_yaw: f32,
     #[rust(0.80f32)]
     light_pitch: f32,
-    #[rust(false)]
+    /// On by default: MuJoCo's directional light always shines, and with the
+    /// lamp off the key runs at 35% and ground seen at grazing angles goes
+    /// near-black (the headlight fades with N·V). Alt+drag still moves it.
+    #[rust(true)]
     light_on: bool,
     #[rust]
     light_last_abs: Option<DVec2>,
@@ -1001,16 +1012,29 @@ impl RobotView {
             1.0,
         );
 
+        // The specular IBL mirrors the raw palette, not the pre-averaged
+        // ambient: a reflection of the sky must be the sky.
+        self.draw_mesh.env_horizon = self.sky_horizon;
+        self.draw_mesh.env_zenith = self.sky_zenith;
+        self.draw_mesh.env_ground = self.ground_color;
+        self.draw_mesh.debug_mode =
+            if std::env::var("URDF_PBR_DEBUG").is_ok() { 1.0 } else { 0.0 };
+
         // Terrain first: it is opaque world geometry the robot stands on, and
-        // drawing it before the links keeps the depth order obvious.
+        // drawing it before the links keeps the depth order obvious. Matte:
+        // soil reflects no sky.
         if let Some(terrain) = &self.terrain_geometry {
             self.draw_mesh.transform = m4(world);
             self.draw_mesh.color = vec4(0.34, 0.33, 0.30, 1.0);
             self.draw_mesh.scale = vec3(1.0, 1.0, 1.0);
             self.draw_mesh.depth_clip = 0.0;
+            self.draw_mesh.roughness = 0.95;
+            self.draw_mesh.metallic = 0.0;
             let gid = terrain.geometry_id();
             self.draw_mesh.draw(cx, gid);
         }
+        self.draw_mesh.roughness = self.material_roughness;
+        self.draw_mesh.metallic = self.material_metallic;
 
         let selected_link = self.selected_link_index();
         if let Some(robot) = &self.robot {
