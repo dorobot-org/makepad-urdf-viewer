@@ -13,6 +13,42 @@ use makepad_xr::scene::*;
 use crate::render::draw::{DrawGridPlane, DrawRobotMesh, DrawRobotReflect, DrawSceneComposite, DrawShadowDepth};
 use crate::robot::{load_any, load_robot, ForwardKinematics, Robot};
 
+/// Mesh registry keyed by caller-chosen ids, with (geometry, local center,
+/// local radius) per entry. A named type rather than the bare HashMap:
+/// makepad's `Script` derive parses a restricted type grammar and rejects
+/// nested generics outright.
+#[derive(Default)]
+pub struct ExternalMeshes(std::collections::HashMap<u64, (Geometry, [f32; 3], f32)>);
+
+impl std::ops::Deref for ExternalMeshes {
+    type Target = std::collections::HashMap<u64, (Geometry, [f32; 3], f32)>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ExternalMeshes {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// One posed instance of a registered external mesh, in the source's Z-up
+/// world — the same convention URDF and terrain use; the viewer applies its
+/// own Z-up→Y-up world transform on top.
+#[derive(Clone, Debug)]
+pub struct ExternalItem {
+    pub mesh_key: u64,
+    /// Column-major 4x4.
+    pub transform: [f32; 16],
+    /// Per-axis scale of the mesh's local coordinates (the shader corrects
+    /// normals for it), so unit primitives serve every size.
+    pub scale: [f32; 3],
+    pub color: [f32; 4],
+    pub roughness: f32,
+    pub metallic: f32,
+}
+
 script_mod! {
     use mod.prelude.widgets.*
     use mod.widgets.*
@@ -230,6 +266,14 @@ pub struct RobotView {
     terrain_geometry: Option<Geometry>,
     #[rust(0usize)]
     terrain_tris: usize,
+    /// Externally-fed scene: a mesh registry and a posed instance list, for
+    /// callers (the mjvScene bridge) that bring whole worlds of their own.
+    /// While items exist they replace the grid floor and the mirror — an
+    /// external scene carries its own ground.
+    #[rust]
+    external_meshes: ExternalMeshes,
+    #[rust]
+    external_items: Vec<ExternalItem>,
     #[rust(0.05f32)]
     grid_spacing: f32,
     #[rust(2.0f32)]
@@ -572,6 +616,103 @@ impl RobotView {
         self.terrain_tris
     }
 
+    /// Register (or replace) an external mesh under `key`: flat xyz
+    /// positions, matching per-vertex normals, triangle indices — the raw
+    /// shape callers like the mjvScene bridge already hold. Bounds are kept
+    /// for the shadow box.
+    pub fn upsert_external_mesh(
+        &mut self,
+        cx: &mut Cx,
+        key: u64,
+        positions: &[f32],
+        normals: &[f32],
+        indices: &[u32],
+    ) {
+        let n = positions.len() / 3;
+        let mut vertices = Vec::with_capacity(n * 8);
+        let mut bmin = [f32::MAX; 3];
+        let mut bmax = [f32::MIN; 3];
+        for i in 0..n {
+            let p = &positions[i * 3..i * 3 + 3];
+            let nrm: [f32; 3] = match normals.get(i * 3..i * 3 + 3) {
+                Some(s) => [s[0], s[1], s[2]],
+                None => [0.0, 0.0, 1.0],
+            };
+            vertices.extend_from_slice(&[p[0], p[1], p[2], 1.0, nrm[0], nrm[1], nrm[2], 0.0]);
+            for k in 0..3 {
+                bmin[k] = bmin[k].min(p[k]);
+                bmax[k] = bmax[k].max(p[k]);
+            }
+        }
+        let center = [
+            (bmin[0] + bmax[0]) * 0.5,
+            (bmin[1] + bmax[1]) * 0.5,
+            (bmin[2] + bmax[2]) * 0.5,
+        ];
+        let dx = bmax[0] - bmin[0];
+        let dy = bmax[1] - bmin[1];
+        let dz = bmax[2] - bmin[2];
+        let radius = 0.5 * (dx * dx + dy * dy + dz * dz).sqrt();
+        let geometry = Geometry::new(cx);
+        geometry.update(cx, indices.to_vec(), vertices);
+        self.external_meshes.insert(key, (geometry, center, radius.max(0.001)));
+    }
+
+    /// Replace the posed instance list of the external scene.
+    pub fn set_external_items(&mut self, cx: &mut Cx, items: Vec<ExternalItem>) {
+        self.external_items = items;
+        self.area.redraw(cx);
+    }
+
+    /// Drop the external scene entirely (registry included).
+    pub fn clear_external(&mut self, cx: &mut Cx) {
+        self.external_items.clear();
+        self.external_meshes.clear();
+        self.area.redraw(cx);
+    }
+
+    /// Frame the camera on the external scene's robot-scale content — the
+    /// same job `frame_camera_on` does at URDF load, with the same
+    /// ground-swallowing filter the shadow box uses.
+    pub fn frame_camera_on_external(&mut self, cx: &mut Cx) {
+        let mut bmin = glam::Vec3::MAX;
+        let mut bmax = glam::Vec3::MIN;
+        let mut any = false;
+        for it in &self.external_items {
+            let Some((_, mc, mr)) = self.external_meshes.get(&it.mesh_key) else { continue };
+            let sc = it.scale[0].max(it.scale[1]).max(it.scale[2]).max(1e-4);
+            let r = mr * sc;
+            if r > 6.0 {
+                continue;
+            }
+            let t = glam::Mat4::from_cols_array(&it.transform);
+            let local = glam::Vec3::new(
+                mc[0] * it.scale[0],
+                mc[1] * it.scale[1],
+                mc[2] * it.scale[2],
+            );
+            let c = t.transform_point3(local);
+            bmin = bmin.min(c - glam::Vec3::splat(r));
+            bmax = bmax.max(c + glam::Vec3::splat(r));
+            any = true;
+        }
+        if !any {
+            return;
+        }
+        // Z-up center, same axis mapping as frame_camera_on / set_camera_target.
+        let center = (bmin + bmax) * 0.5;
+        let radius = ((bmax - bmin).length() * 0.5).max(0.05);
+        let distance = (radius * 3.1).clamp(0.15, 40.0);
+        self.camera.desktop_target = vec3(center.x, center.z.max(0.2), -center.y);
+        self.camera.distance = distance;
+        self.pan_offset = vec2(0.0, 0.0);
+        self.area.redraw(cx);
+    }
+
+    pub fn external_counts(&self) -> (usize, usize) {
+        (self.external_meshes.len(), self.external_items.len())
+    }
+
     /// Move the orbit pivot to a point in the model's own (Z-up) frame.
     ///
     /// For following a walking robot: the camera is framed once at load, so a
@@ -863,14 +1004,45 @@ impl RobotView {
     /// and the robot move.
     fn compute_light_vp(&self) -> glam::Mat4 {
         let world = z_up_to_y_up();
-        let (center, radius) = match &self.robot {
-            Some(robot) => {
-                let (bmin, bmax) = robot.bounds_world();
-                let c = world.transform_point3((bmin + bmax) * 0.5);
-                let r = ((bmax - bmin).length() * 0.5).max(0.05);
-                (c, r)
+        let mut bmin = glam::Vec3::MAX;
+        let mut bmax = glam::Vec3::MIN;
+        let mut any = false;
+        if let Some(robot) = &self.robot {
+            let (rmin, rmax) = robot.bounds_world();
+            let c = world.transform_point3((rmin + rmax) * 0.5);
+            let r = ((rmax - rmin).length() * 0.5).max(0.05);
+            bmin = bmin.min(c - glam::Vec3::splat(r));
+            bmax = bmax.max(c + glam::Vec3::splat(r));
+            any = true;
+        }
+        // External items join the box — except grounds (planes, heightfields,
+        // anything huge), which would stretch the map until nothing has
+        // resolution. They receive shadows; they do not shape the box.
+        for it in &self.external_items {
+            let Some((_, mc, mr)) = self.external_meshes.get(&it.mesh_key) else { continue };
+            let sc = it.scale[0].max(it.scale[1]).max(it.scale[2]).max(1e-4);
+            let r = mr * sc;
+            if r > 6.0 {
+                continue;
             }
-            None => (glam::Vec3::new(0.0, 0.2, 0.0), 0.5),
+            let t = glam::Mat4::from_cols_array(&it.transform);
+            let local = glam::Vec3::new(
+                mc[0] * it.scale[0],
+                mc[1] * it.scale[1],
+                mc[2] * it.scale[2],
+            );
+            let c = world.transform_point3(t.transform_point3(local));
+            bmin = bmin.min(c - glam::Vec3::splat(r));
+            bmax = bmax.max(c + glam::Vec3::splat(r));
+            any = true;
+        }
+        let (center, radius) = if any {
+            (
+                (bmin + bmax) * 0.5,
+                ((bmax - bmin).length() * 0.5).max(0.05),
+            )
+        } else {
+            (glam::Vec3::new(0.0, 0.2, 0.0), 0.5)
         };
         // Pad so the ground under the robot — which receives the shadow — is
         // inside the box, and so a limb swinging out does not clip its own
@@ -890,7 +1062,7 @@ impl RobotView {
     /// light's point of view. Same geometry as the lit pass — only the
     /// transform and the output differ.
     fn draw_shadow_pass(&mut self, cx: &mut Cx2d, scene_state: SceneState3D) {
-        if self.robot.is_none() {
+        if self.robot.is_none() && self.external_items.is_empty() {
             return;
         }
         let light_vp = self.compute_light_vp();
@@ -930,6 +1102,17 @@ impl RobotView {
                     shadow_draws += 1;
                 }
             }
+            // External items cast too — that is most of the point of feeding
+            // a whole scene through here.
+            for it in &self.external_items {
+                let Some((geometry, _, _)) = self.external_meshes.get(&it.mesh_key) else { continue };
+                self.draw_shadow.transform = m4(world * glam::Mat4::from_cols_array(&it.transform));
+                self.draw_shadow.scale = vec3(it.scale[0], it.scale[1], it.scale[2]);
+                let gid = geometry.geometry_id();
+                self.draw_shadow.draw(cx3d, gid);
+                shadow_draws += 1;
+            }
+            self.draw_shadow.scale = vec3(1.0, 1.0, 1.0);
             if std::env::var("URDF_SHADOW_DEBUG").is_ok() && self.dbg_frames % 120 == 0 {
                 eprintln!("[shadow] {shadow_draws} draws, light_vp[12..15]={:?}",
                     &self.light_vp.v[12..15]);
@@ -1036,6 +1219,24 @@ impl RobotView {
         self.draw_mesh.roughness = self.material_roughness;
         self.draw_mesh.metallic = self.material_metallic;
 
+        // Externally-fed world (the mjvScene bridge): every item carries its
+        // own material; the robot material is restored afterwards.
+        if !self.external_items.is_empty() {
+            for it in &self.external_items {
+                let Some((geometry, _, _)) = self.external_meshes.get(&it.mesh_key) else { continue };
+                self.draw_mesh.transform = m4(world * glam::Mat4::from_cols_array(&it.transform));
+                self.draw_mesh.color = vec4(it.color[0], it.color[1], it.color[2], it.color[3]);
+                self.draw_mesh.scale = vec3(it.scale[0], it.scale[1], it.scale[2]);
+                self.draw_mesh.roughness = it.roughness;
+                self.draw_mesh.metallic = it.metallic;
+                self.draw_mesh.depth_clip = 0.0;
+                let gid = geometry.geometry_id();
+                self.draw_mesh.draw(cx, gid);
+            }
+            self.draw_mesh.roughness = self.material_roughness;
+            self.draw_mesh.metallic = self.material_metallic;
+        }
+
         let selected_link = self.selected_link_index();
         if let Some(robot) = &self.robot {
             for (i, link) in robot.links.iter().enumerate() {
@@ -1091,7 +1292,9 @@ impl RobotView {
         self.draw_grid.debug_shadow =
             if std::env::var("URDF_SHADOW_DEBUG").is_ok() { 1.0 } else { 0.0 };
         self.draw_grid.depth_clip = 0.0;
-        if self.show_grid {
+        // An external scene brings its own ground; the viewer's grid floor
+        // would z-fight it at y = 0.
+        if self.show_grid && self.external_items.is_empty() {
             self.draw_grid.draw(cx, grid_geom);
             // Mirror floor: the robot reflected through the ground plane,
             // blended at the material reflectance — MuJoCo's reflectance look.
