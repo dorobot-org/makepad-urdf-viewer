@@ -70,7 +70,10 @@ script_mod! {
         ground_color: #x334D66
         ground2_color: #x1A3350
         grid_color: #xB3B3B3
-        floor_reflectance: 0.22
+        // Mirror floor is OPT-IN: a host that never asked for a reflection
+        // should not find one under its robot. nexus-studio sets 0.22 for
+        // the MuJoCo-parity look.
+        floor_reflectance: 0.0
         material_roughness: 0.42
         material_metallic: 0.10
         draw_bg: mod.draw.DrawSceneComposite{}
