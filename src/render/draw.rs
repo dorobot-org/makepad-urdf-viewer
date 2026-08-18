@@ -299,7 +299,14 @@ script_mod! {
             // blurs toward flat irradiance as roughness rises — the analytic
             // stand-in for a prefiltered mip chain.
             let two_nv = 2.0 * dot(normal, view_dir)
-            let refl_y = normal.y * two_nv - view_dir.y
+            // Full reflection vector. The gradient lookup below needs only its
+            // height, but the sun disc needs the direction.
+            let refl = vec3(
+                normal.x * two_nv - view_dir.x,
+                normal.y * two_nv - view_dir.y,
+                normal.z * two_nv - view_dir.z
+            )
+            let refl_y = refl.y
             let up = clamp(refl_y, -1.0, 1.0)
             let upc = clamp(up, 0.0, 1.0)
             let soft = 0.03 + 0.35 * rough
@@ -313,6 +320,26 @@ script_mod! {
             let a004 = min(rx * rx, pow(2.0, 0.0 - 9.28 * nov)) * rx + (0.0425 - 0.0275 * rough)
             let ab_a = 1.04 - 0.572 * rough - 1.04 * a004
             let ab_b = 1.04 * a004 + 0.022 * rough - 0.04
+            // The one piece of STRUCTURE the environment has: a sun disc, so a
+            // polished link carries a specular highlight of the light rather
+            // than only the flat gradient. Taken from makepad's default
+            // environment (draw_pbr's `default_env_color`) — core^96 * 1.1
+            // plus glow^16 * 0.35, tinted warm — but pointed at OUR key light
+            // instead of its hardcoded direction, because this lamp is
+            // draggable and a highlight that ignored it would contradict the
+            // shading beside it.
+            //
+            // Faded out with roughness: a rough surface has no sharp disc to
+            // show, and leaving it in put a mirror glint on matte plastic.
+            // Scaled by the same key_gain the direct term uses, so the
+            // reflection and the lighting agree about how bright the lamp is.
+            let sun_d = max(dot(normalize(refl), key_dir), 0.0)
+            let sun = (pow(sun_d, 96.0) * 1.1 + pow(sun_d, 16.0) * 0.35)
+                * (1.0 - rough) * key_gain
+            let env_r = env_r + sun
+            let env_g = env_g + sun * 0.96
+            let env_b = env_b + sun * 0.88
+
             // Grazing Fresnel makes this the silhouette lift the old ad-hoc
             // rim term faked; ambient like `hemi`, so not sun-shadowed.
             let spec_env_r = env_r * (f0_r * ab_a + ab_b)
