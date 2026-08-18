@@ -20,6 +20,10 @@ pub struct MeshData {
     pub bounds_min: [f32; 3],
     /// Maximum bounds
     pub bounds_max: [f32; 3],
+    /// Diffuse colour the mesh brought with it, when the format carries one.
+    /// COLLADA does; STL cannot. A URDF link with no material of its own can
+    /// fall back to this instead of defaulting to grey.
+    pub color: Option<[f32; 4]>,
 }
 
 impl MeshData {
@@ -250,6 +254,10 @@ impl MeshData {
     }
 
     /// Append one interleaved vertex: pos(3), id(1), normal(3), uv(2).
+    pub(crate) fn push_vertex_pub(&mut self, pos: [f32; 3], normal: [f32; 3], id: f32) {
+        self.push_vertex(pos, normal, id)
+    }
+
     fn push_vertex(&mut self, pos: [f32; 3], normal: [f32; 3], id: f32) {
         self.vertices.extend_from_slice(&pos);
         self.vertices.push(id);

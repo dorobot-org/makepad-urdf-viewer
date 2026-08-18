@@ -12,6 +12,7 @@
 //! // Robot is ready with forward kinematics computed
 //! ```
 
+pub mod collada;
 mod model;
 mod loader;
 mod kinematics;

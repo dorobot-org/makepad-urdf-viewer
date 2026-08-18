@@ -342,7 +342,7 @@ fn walk(
         }
         let kind = match extension_of(&path.to_string_lossy()).as_deref() {
             Some("urdf") => ModelKind::Urdf,
-            Some("stl") | Some("obj") => ModelKind::Mesh,
+            Some("stl") | Some("obj") | Some("dae") => ModelKind::Mesh,
             _ => continue,
         };
         if kind == ModelKind::Urdf {
@@ -442,10 +442,11 @@ fn mesh_from_path(path: &str) -> Result<MeshData, String> {
                 .map_err(|e| format!("Failed to open OBJ file: {}", e))?;
             MeshData::from_obj_str(&text)
         }
-        Some("dae") => Err(format!(
-            "COLLADA (.dae) meshes are not supported; convert {} to STL or OBJ",
-            path
-        )),
+        Some("dae") => {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| format!("Failed to open COLLADA file: {}", e))?;
+            crate::robot::collada::from_dae_str(&text)
+        }
         _ => MeshData::from_stl(path),
     }
 }
@@ -456,10 +457,10 @@ fn mesh_from_bytes(name: &str, bytes: &[u8]) -> Result<MeshData, String> {
             let text = std::str::from_utf8(bytes).map_err(|e| format!("OBJ not utf8: {}", e))?;
             MeshData::from_obj_str(text)
         }
-        Some("dae") => Err(format!(
-            "COLLADA (.dae) meshes are not supported; convert {} to STL or OBJ",
-            name
-        )),
+        Some("dae") => {
+            let text = std::str::from_utf8(bytes).map_err(|e| format!("COLLADA not utf8: {}", e))?;
+            crate::robot::collada::from_dae_str(text)
+        }
         _ => MeshData::from_stl_bytes(bytes),
     }
 }
