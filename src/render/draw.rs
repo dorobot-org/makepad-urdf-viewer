@@ -189,29 +189,42 @@ script_mod! {
             // because this dialect has no textureGather, and a slope-scaled
             // bias because grazing surfaces self-shadow otherwise (there is
             // no fwidth here either, hence the explicit N.L term).
-            let lit = 1.0 - clamp(dot(normal, key_dir), 0.0, 1.0)
-            let bias = self.shadow_texel.z + self.shadow_texel.w * lit
-            let sc = self.light_vp * vec4(self.v_world.x, self.v_world.y, self.v_world.z, 1.0)
-            // Render-target V orientation differs by backend; carry it as a
-            // value so it can be verified rather than assumed.
-            let suv = vec2(sc.x * 0.5 + 0.5,
-                mix(sc.y * 0.5 + 0.5, 0.5 - sc.y * 0.5, self.shadow_flip))
-            let sdepth = sc.z
+            // CASCADE SELECT, in makepad's `csm_vis` shape: try the tight
+            // box, fall through to the wide one, and treat a fragment outside
+            // both as lit — the map only covers the robot and the ground its
+            // shadow lands on. Cascade 0 is fitted to the caster alone, so a
+            // contact shadow keeps its resolution however far the tail runs
+            // at a grazing sun; cascade 1 carries that tail.
+            let wp = vec4(self.v_world.x, self.v_world.y, self.v_world.z, 1.0)
+            let mut ci = 0.0
+            let mut sc = self.csm_vp0 * wp
+            let mut cbias = self.shadow_texel.z
+            if max(abs(sc.x), abs(sc.y)) > 0.99 || sc.z < 0.0 || sc.z > 1.0 {
+                ci = 1.0
+                sc = self.csm_vp1 * wp
+                cbias = self.shadow_texel.w
+            }
             let mut shade = 0.0
-            let mut taps = 0.0
-            // Outside the map (or behind the light) is lit, never shadowed —
-            // the map only covers a box around the robot.
-            if suv.x > 0.001 && suv.x < 0.999 && suv.y > 0.001 && suv.y < 0.999 && sdepth < 1.0 {
+            if max(abs(sc.x), abs(sc.y)) <= 0.99 && sc.z >= 0.0 && sc.z <= 1.0 {
+                let sdepth = sc.z
+                // Render-target V orientation differs by backend; carried as
+                // a value so it can be verified rather than assumed.
+                let su = sc.x * 0.5 + 0.5
+                let sv = mix(sc.y * 0.5 + 0.5, 0.5 - sc.y * 0.5, self.shadow_flip)
+                let bias = cbias * (1.0 + (1.0 - clamp(dot(normal, key_dir), 0.0, 1.0)) * 2.0)
+                let m = 1.5 * self.shadow_texel.x
+                let mut taps = 0.0
                 for oy in 0..3 {
                     for ox in 0..3 {
-                        let o = vec2(
-                            (float(ox) - 1.0) * self.shadow_texel.x,
-                            (float(oy) - 1.0) * self.shadow_texel.y
-                        )
+                        let uu = clamp(su + (float(ox) - 1.0) * self.shadow_texel.x, m, 1.0 - m)
+                        let vv = clamp(sv + (float(oy) - 1.0) * self.shadow_texel.y, m, 1.0 - m)
+                        // Into this cascade's slot of the shared map. 0.5 is
+                        // 1/CSM_N — two cascades side by side, the same
+                        // packing makepad uses at 1/3 for three.
                         // Nearest, not linear: filtering a two-channel packed
                         // depth interpolates hi and lo independently and
                         // invents depths where the hi byte steps.
-                        let smp = self.shadow_map.sample_nearest(vec2(suv.x + o.x, suv.y + o.y))
+                        let smp = self.shadow_map.sample_nearest(vec2((uu + ci) * 0.5, vv))
                         let occluder = smp.y + (smp.x + smp.z) / 255.0
                         shade = shade + step(occluder + bias, sdepth)
                         taps = taps + 1.0
@@ -439,34 +452,54 @@ script_mod! {
             // The ground is where a cast shadow actually reads, so the plane
             // samples the same map the meshes do. Flat and facing straight up,
             // so a constant bias is enough — no slope term needed.
-            let sc = self.light_vp * vec4(self.v_world.x, self.v_world.y, self.v_world.z, 1.0)
-            let suv = vec2(sc.x * 0.5 + 0.5,
-                mix(sc.y * 0.5 + 0.5, 0.5 - sc.y * 0.5, self.shadow_flip))
-            let sdepth = sc.z
+            // CASCADE SELECT, in makepad's `csm_vis` shape: try the tight
+            // box, fall through to the wide one, and treat a fragment outside
+            // both as lit — the map only covers the robot and the ground its
+            // shadow lands on. Cascade 0 is fitted to the caster alone, so a
+            // contact shadow keeps its resolution however far the tail runs
+            // at a grazing sun; cascade 1 carries that tail.
+            let wp = vec4(self.v_world.x, self.v_world.y, self.v_world.z, 1.0)
+            let mut ci = 0.0
+            let mut sc = self.csm_vp0 * wp
+            let mut cbias = self.shadow_texel.z
+            if max(abs(sc.x), abs(sc.y)) > 0.99 || sc.z < 0.0 || sc.z > 1.0 {
+                ci = 1.0
+                sc = self.csm_vp1 * wp
+                cbias = self.shadow_texel.w
+            }
             let mut shade = 0.0
-            let mut taps = 0.0
-            if suv.x > 0.001 && suv.x < 0.999 && suv.y > 0.001 && suv.y < 0.999 && sdepth < 1.0 {
+            if max(abs(sc.x), abs(sc.y)) <= 0.99 && sc.z >= 0.0 && sc.z <= 1.0 {
+                let sdepth = sc.z
+                // Render-target V orientation differs by backend; carried as
+                // a value so it can be verified rather than assumed.
+                let su = sc.x * 0.5 + 0.5
+                let sv = mix(sc.y * 0.5 + 0.5, 0.5 - sc.y * 0.5, self.shadow_flip)
+                let bias = cbias * (1.0 + 0.0 * 2.0)
+                let m = 1.5 * self.shadow_texel.x
+                let mut taps = 0.0
                 for oy in 0..3 {
                     for ox in 0..3 {
-                        let o = vec2(
-                            (float(ox) - 1.0) * self.shadow_texel.x,
-                            (float(oy) - 1.0) * self.shadow_texel.y
-                        )
-                        let smp = self.shadow_map.sample_nearest(vec2(suv.x + o.x, suv.y + o.y))
-                        let occ = smp.y + (smp.x + smp.z) / 255.0
-                        shade = shade + step(occ + self.shadow_texel.z, sdepth)
+                        let uu = clamp(su + (float(ox) - 1.0) * self.shadow_texel.x, m, 1.0 - m)
+                        let vv = clamp(sv + (float(oy) - 1.0) * self.shadow_texel.y, m, 1.0 - m)
+                        // Into this cascade's slot of the shared map. 0.5 is
+                        // 1/CSM_N — two cascades side by side, the same
+                        // packing makepad uses at 1/3 for three.
+                        // Nearest, not linear: filtering a two-channel packed
+                        // depth interpolates hi and lo independently and
+                        // invents depths where the hi byte steps.
+                        let smp = self.shadow_map.sample_nearest(vec2((uu + ci) * 0.5, vv))
+                        let occluder = smp.y + (smp.x + smp.z) / 255.0
+                        shade = shade + step(occluder + bias, sdepth)
                         taps = taps + 1.0
                     }
                 }
                 shade = shade / max(taps, 1.0)
             }
             if self.debug_shadow > 0.5 {
-                let c = self.shadow_map.sample(suv).x
-                // red = outside the map entirely
-                if suv.x < 0.001 || suv.x > 0.999 || suv.y < 0.001 || suv.y > 0.999 {
-                    return vec4(1.0, 0.0, 0.0, 1.0)
-                }
-                return vec4(c, c, sdepth, 1.0)
+                // Which cascade claimed this fragment: red = neither.
+                if ci < 0.5 { return vec4(0.2, 1.0, 0.3, 1.0) }
+                if max(abs(sc.x), abs(sc.y)) <= 0.99 { return vec4(1.0, 0.8, 0.2, 1.0) }
+                return vec4(1.0, 0.0, 0.0, 1.0)
             }
             // Fades out with the same haze the lines do, so a shadow never
             // hangs in the fog past where the ground itself has faded.
@@ -662,6 +695,13 @@ pub struct DrawGridPlane {
     /// Light view-projection for the shadow lookup (see DrawRobotMesh).
     #[live]
     pub light_vp: Mat4f,
+    /// Per-cascade light view-projection, without the atlas slot: the shader
+    /// tests containment in each cascade's own clip box before mapping into
+    /// the shared map.
+    #[live]
+    pub csm_vp0: Mat4f,
+    #[live]
+    pub csm_vp1: Mat4f,
     /// x,y = shadow-map texel in UV; z = depth bias (w unused here).
     #[live(vec4(0.0005, 0.0005, 0.0015, 0.0))]
     pub shadow_texel: Vec4f,
@@ -774,6 +814,13 @@ pub struct DrawRobotMesh {
     /// a uniform for the same reason as `key_light`.
     #[live]
     pub light_vp: Mat4f,
+    /// Per-cascade light view-projection, without the atlas slot: the shader
+    /// tests containment in each cascade's own clip box before mapping into
+    /// the shared map.
+    #[live]
+    pub csm_vp0: Mat4f,
+    #[live]
+    pub csm_vp1: Mat4f,
     /// x,y = one shadow-map texel in UV; z = constant depth bias;
     /// w = slope-scaled bias coefficient.
     #[live(vec4(0.0005, 0.0005, 0.0015, 0.006))]
@@ -814,6 +861,13 @@ pub struct DrawShadowDepth {
     pub scale: Vec3f,
     #[live]
     pub light_vp: Mat4f,
+    /// Per-cascade light view-projection, without the atlas slot: the shader
+    /// tests containment in each cascade's own clip box before mapping into
+    /// the shared map.
+    #[live]
+    pub csm_vp0: Mat4f,
+    #[live]
+    pub csm_vp1: Mat4f,
 }
 
 impl DrawShadowDepth {

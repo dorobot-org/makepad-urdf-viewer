@@ -175,6 +175,22 @@ const SSAA_SCALE: f64 = 2.0;
 /// Shadow map resolution. 2048 is what MuJoCo's Filament backend defaults to
 /// and is ample for a box fitted to one robot.
 const SHADOW_MAP_SIZE: usize = 2048;
+/// Cascade count.
+///
+/// Two, where makepad's CSM uses three. Its cascades slice a view frustum for
+/// a village-scale world, and the far rungs of that ladder earn their keep.
+/// Here the scene is ONE robot, and the resolution problem has a different
+/// shape: the box has to cover the caster *and* the ground its shadow falls
+/// on, and those two want opposite extents. So the split runs along the
+/// SHADOW rather than along view depth —
+///
+///   0 = the caster alone, tight, where a contact shadow is actually read
+///   1 = caster + ground footprint, loose, carrying the long tail
+///
+/// Each is fitted by makepad's rules (sphere extent, texel-snapped origin,
+/// bias derived from its own texel size); only the choice of what each one
+/// covers is ours.
+const CSM_N: usize = 2;
 
 const DEFAULT_LINK_COLOR: [f32; 4] = [0.62, 0.65, 0.70, 1.0];
 const SELECTED_TINT: [f32; 3] = [1.0, 0.75, 0.25];
@@ -247,6 +263,14 @@ pub struct RobotView {
     shadow_depth_texture: Texture,
     #[rust]
     light_vp: Mat4f,
+    /// Per-cascade light view-projection, WITHOUT the atlas slot transform:
+    /// the receiver tests containment in each cascade's own clip box, then
+    /// maps into the shared map. The pass applies the slot on top.
+    #[rust]
+    csm_vp: [Mat4f; CSM_N],
+    /// Per-cascade depth bias in z01, derived from that cascade's texel size.
+    #[rust]
+    csm_bias: [f32; CSM_N],
     #[new]
     color_texture: Texture,
     #[new]
@@ -1005,7 +1029,7 @@ impl RobotView {
     /// robot's world bounds (plus the ground it stands on, so the shadow it
     /// casts is inside the box). Recomputed per frame because both the light
     /// and the robot move.
-    fn compute_light_vp(&self) -> glam::Mat4 {
+    fn compute_light_vp(&mut self) -> glam::Mat4 {
         let world = z_up_to_y_up();
         let mut bmin = glam::Vec3::MAX;
         let mut bmax = glam::Vec3::MIN;
@@ -1039,26 +1063,115 @@ impl RobotView {
             bmax = bmax.max(c + glam::Vec3::splat(r));
             any = true;
         }
-        let (center, radius) = if any {
+        let (caster_c, caster_r, ground_y) = if any {
             (
                 (bmin + bmax) * 0.5,
                 ((bmax - bmin).length() * 0.5).max(0.05),
+                bmin.y,
             )
         } else {
-            (glam::Vec3::new(0.0, 0.2, 0.0), 0.5)
+            (glam::Vec3::new(0.0, 0.2, 0.0), 0.5, 0.0)
         };
         // Pad so the ground under the robot — which receives the shadow — is
         // inside the box, and so a limb swinging out does not clip its own
         // shadow off at the edge.
-        let r = radius * 1.9;
+        //
+        // Then the two stability rules makepad's own CSM fitter documents
+        // (libs/render/src/shadow_csm.rs), both of which this fitter lacked.
+        // They matter more here than in the map view they were written for:
+        // the caster is a WALKING robot, so `bounds_world` re-walks every
+        // link each frame and both inputs move continuously.
+        //
+        //  * QUANTISE THE RADIUS. A swinging arm resized the ortho box every
+        //    frame, so the map rescaled, every texel covered a different
+        //    patch of world, and the edges breathed — makepad fits cascades
+        //    to a bounding SPHERE for the same reason, its radius being
+        //    invariant where a tight box's is not.
+        //
+        //  * SNAP THE ORIGIN TO WHOLE TEXELS. Sub-texel translation
+        //    re-rasterises every edge each frame (makepad: "the crawling-edge
+        //    artifact"), and as the robot walks the box translates with it —
+        //    so the shadow crawled against the very ground it should have
+        //    been lying still on.
         let l = self.light_vec();
         let dir = glam::Vec3::new(l[0], l[1], l[2]).normalize_or_zero();
         let dir = if dir.length_squared() < 1e-6 { glam::Vec3::Y } else { dir };
-        let eye = center + dir * (r * 2.0);
-        let up = if dir.y.abs() > 0.95 { glam::Vec3::Z } else { glam::Vec3::Y };
-        let view = glam::Mat4::look_at_rh(eye, center, up);
-        let proj = glam::Mat4::orthographic_rh(-r, r, -r, r, 0.01, r * 4.0);
-        proj * view
+
+        // Cascade 1 covers the caster AND the ground it throws onto. A box
+        // sized to the caster alone is correct only for an overhead sun: at a
+        // grazing angle the shadow reaches height/tan(pitch) across the
+        // floor, far outside such a box, and everything past the edge clamps
+        // to the border texel — the long smear a low sun produced, which read
+        // as a broken projection rather than as a box too small.
+        //
+        // The reach is bounded in caster radii: unbounded, it runs to
+        // infinity as the sun nears the horizon and takes the texel density
+        // with it, trading the smear for a blur. That bound is also exactly
+        // why cascade 0 exists — it keeps a tight, high-resolution box on the
+        // caster, so the contact shadow stays crisp however far the tail runs.
+        const MAX_REACH: f32 = 3.0;
+        let dy_l = dir.y.abs().max(0.20);
+        let drop = (caster_c.y - ground_y).max(0.0);
+        let reach = (drop / dy_l).min(caster_r * MAX_REACH);
+        let foot = caster_c - dir * reach;
+
+        let fits = [
+            // 0: the caster, tight.
+            (caster_c, caster_r * 1.15),
+            // 1: caster + footprint.
+            ((caster_c + foot) * 0.5, (caster_c - foot).length() * 0.5 + caster_r),
+        ];
+
+        for (ci, (c, rad)) in fits.iter().enumerate() {
+            // QUANTISE THE EXTENT. `bounds_world` re-walks every link each
+            // frame, so a swinging arm resized the box continuously: the map
+            // rescaled, every texel covered a different patch of world, and
+            // the edges breathed. makepad fits to a bounding SPHERE for the
+            // same reason — its radius is invariant where a tight box's is not.
+            const R_STEP: f32 = 0.25;
+            let r = (rad / R_STEP).ceil() * R_STEP;
+            let eye = *c + dir * (r * 2.0);
+            let up = if dir.y.abs() > 0.95 { glam::Vec3::Z } else { glam::Vec3::Y };
+            let view = glam::Mat4::look_at_rh(eye, *c, up);
+            let proj = glam::Mat4::orthographic_rh(-r, r, -r, r, 0.01, r * 4.0);
+            let vp = proj * view;
+
+            // SNAP THE ORIGIN TO WHOLE TEXELS. Sub-texel translation
+            // re-rasterises every edge each frame — makepad calls it the
+            // crawling-edge artifact — and as the robot walks the box
+            // translates with it, so the shadow crawled against the very
+            // ground it should have been lying still on. Snapping is per
+            // cascade because each has its own texel size.
+            let cw = SHADOW_MAP_SIZE as f32 * 0.5;
+            let o = vp.project_point3(*c);
+            let dx = (o.x * cw).round() / cw - o.x;
+            let dy = (o.y * cw).round() / cw - o.y;
+            let vp = glam::Mat4::from_translation(glam::Vec3::new(dx, dy, 0.0)) * vp;
+
+            self.csm_vp[ci] = m4(vp);
+            // Bias as makepad derives bias01: the world size of one texel
+            // times 1.5, plus a 5 mm floor for raster error, expressed in the
+            // map's depth range. A constant cannot serve both cascades — they
+            // differ in extent by several times over.
+            let texel_world = (2.0 * r) / SHADOW_MAP_SIZE as f32;
+            self.csm_bias[ci] = (texel_world * 1.5 + 0.005) / (4.0 * r);
+        }
+        // Kept for the debug view, which draws the widest cascade.
+        glam::Mat4::from_cols_array(&self.csm_vp[CSM_N - 1].v)
+    }
+
+    /// Maps a cascade's clip x into its own horizontal slot of the shared
+    /// map, so N cascades share ONE texture and one binding.
+    ///
+    /// Baked into the projection rather than set as a viewport: this dialect
+    /// exposes no sub-rect on a pass, and every cascade has to be rasterised
+    /// inside a single begin/end anyway — a second `begin_pass` would clear
+    /// what the first one drew.
+    fn csm_slot(ci: usize) -> glam::Mat4 {
+        let n = CSM_N as f32;
+        let off = (2.0 * ci as f32 + 1.0 - n) / n;
+        glam::Mat4::from_translation(glam::Vec3::new(off, 0.0, 0.0))
+            * glam::Mat4::from_scale(glam::Vec3::new(1.0 / n, 1.0, 1.0))
     }
 
     /// Render every link (and the terrain) into the shadow map from the
@@ -1076,8 +1189,13 @@ impl RobotView {
         // twice the target's size, so every lookup landed scaled — the
         // registration error. Auto textures + a logical size keep them equal.
         let dpi = cx.cx.current_dpi_factor().max(1.0);
+        // WIDE, not split. Packing N cascades into a square map would leave
+        // each slot SIZE/N x SIZE for a SQUARE ortho box — half the
+        // resolution across, full resolution down, so a round shadow would
+        // rasterise into an oval. Widening the atlas instead gives every
+        // cascade a full SIZE x SIZE slot.
         self.shadow_pass.set_size(cx.cx, DVec2 {
-            x: SHADOW_MAP_SIZE as f64 / dpi,
+            x: (SHADOW_MAP_SIZE * CSM_N) as f64 / dpi,
             y: SHADOW_MAP_SIZE as f64 / dpi,
         });
         cx.make_child_pass(&self.shadow_pass);
@@ -1091,9 +1209,15 @@ impl RobotView {
             cx3d.begin_scene_3d(scene_state);
             let previous_world = cx3d.set_scene_world_transform_3d(m4(glam::Mat4::IDENTITY));
             let world = z_up_to_y_up();
-            self.draw_shadow.light_vp = self.light_vp;
             self.draw_shadow.scale = vec3(1.0, 1.0, 1.0);
             let mut shadow_draws = 0usize;
+            // Every cascade inside ONE begin/end: a second begin_pass would
+            // clear the slot the first one just filled. The slot transform
+            // rides on the projection, so all that changes per cascade is
+            // light_vp.
+            for ci in 0..CSM_N {
+            self.draw_shadow.light_vp =
+                m4(Self::csm_slot(ci) * glam::Mat4::from_cols_array(&self.csm_vp[ci].v));
             if let Some(robot) = &self.robot {
                 for (i, _link) in robot.links.iter().enumerate() {
                     let Some(Some(slot)) = self.geometries.get(i) else { continue };
@@ -1116,9 +1240,10 @@ impl RobotView {
                 shadow_draws += 1;
             }
             self.draw_shadow.scale = vec3(1.0, 1.0, 1.0);
+            }
             if std::env::var("URDF_SHADOW_DEBUG").is_ok() && self.dbg_frames % 120 == 0 {
-                eprintln!("[shadow] {shadow_draws} draws, light_vp[12..15]={:?}",
-                    &self.light_vp.v[12..15]);
+                eprintln!("[shadow] {shadow_draws} draws over {CSM_N} cascades, bias={:?}",
+                    self.csm_bias);
             }
             if let Some(prev) = previous_world {
                 cx3d.set_scene_world_transform_3d(prev);
@@ -1162,7 +1287,13 @@ impl RobotView {
         // size so the PCF taps land on neighbouring texels.
         self.draw_mesh.light_vp = self.light_vp;
         let texel = 1.0 / SHADOW_MAP_SIZE as f32;
-        self.draw_mesh.shadow_texel = vec4(texel, texel, 0.0015, 0.004);
+        // x,y = texel size inside one cascade slot; z,w = the two cascades'
+        // depth biases. The slope term rides the selected cascade's bias in
+        // the shader, so it scales with that cascade's texel rather than
+        // being a constant that suits only one of them.
+        self.draw_mesh.shadow_texel = vec4(texel, texel, self.csm_bias[0], self.csm_bias[1]);
+        self.draw_mesh.csm_vp0 = self.csm_vp[0];
+        self.draw_mesh.csm_vp1 = self.csm_vp[1];
         // The shadow pass rasterises RAW light_vp clip coordinates, without
         // the per-backend projection fixup makepad bakes into its own camera
         // matrices. Metal rasterises NDC +Y to row 0 (top-left origin) but
@@ -1289,7 +1420,9 @@ impl RobotView {
         self.draw_grid.px_scale = self.px_scale;
         self.draw_grid.light_vp = self.light_vp;
         let gtexel = 1.0 / SHADOW_MAP_SIZE as f32;
-        self.draw_grid.shadow_texel = vec4(gtexel, gtexel, 0.0015, 0.0);
+        self.draw_grid.shadow_texel = vec4(gtexel, gtexel, self.csm_bias[0], self.csm_bias[1]);
+        self.draw_grid.csm_vp0 = self.csm_vp[0];
+        self.draw_grid.csm_vp1 = self.csm_vp[1];
         self.draw_grid.shadow_flip = self.draw_mesh.shadow_flip;
         self.draw_grid.draw_vars.set_texture(0, &self.shadow_texture);
         self.draw_grid.debug_shadow =
