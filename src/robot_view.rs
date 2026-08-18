@@ -1791,6 +1791,21 @@ impl Widget for RobotView {
         cx.end_pass(&self.pass);
 
         self.draw_bg.set_scene_texture(&self.color_texture);
+        self.draw_bg.draw_vars.set_texture(1, &self.depth_texture);
+        // One texel of the SUPERSAMPLED target, which is what the depth
+        // buffer is: sampling at composite resolution would step over a
+        // whole SSAA block and read the wrong neighbour.
+        let dw = (rect.size.x * SSAA_SCALE).max(1.0) as f32;
+        let dh = (rect.size.y * SSAA_SCALE).max(1.0) as f32;
+        let ao = std::env::var("URDF_AO")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.35);
+        let edge = std::env::var("URDF_EDGE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.30);
+        self.draw_bg.edge_ao = vec4(1.0 / dw, 1.0 / dh, ao, edge);
         // camera basis for the directional sky dome in the composite shader
         if let Some(scene_state) = self.camera.desktop_scene_state(rect, cx.time()) {
             let inv = scene_state.view.invert();

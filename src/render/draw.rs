@@ -570,9 +570,46 @@ pub mod composite_shader {
         mod.draw.DrawSceneComposite = mod.std.set_type_default() do #(DrawSceneComposite::script_shader(vm)){
             ..mod.draw.DrawQuad
             scene_texture: texture_2d(float)
+            depth_texture: texture_2d(float)
 
             pixel: fn() {
                 let scene = self.scene_texture.sample_as_bgra(self.pos)
+                // ---- cavity AO + edges, from depth alone -------------------
+                // A Laplacian on the depth buffer: compare this pixel against
+                // the average of its four neighbours. On a flat surface —
+                // however steeply it is angled away — the centre sits on the
+                // plane its neighbours predict, so the response is ~0. It only
+                // departs where the SURFACE does, which is why this needs no
+                // near/far planes and no normal buffer: it is scale-free.
+                //
+                //   concave (centre further than predicted) -> a crevice, the
+                //     inside of a slot, where two parts meet. Darkened. This
+                //     is the contact shading that makes an assembly read as
+                //     parts touching rather than parts overlapping.
+                //   convex  (centre nearer) -> a ridge or a silhouette against
+                //     something behind it. Darkened as a line, which is the
+                //     outline a CAD viewer draws.
+                //
+                // Untextured STL gets both for free — no UVs, no maps, no
+                // change to any asset.
+                let ex = self.edge_ao.x
+                let ey = self.edge_ao.y
+                let dc = self.depth_texture.sample(self.pos).x
+                let dl = self.depth_texture.sample(vec2(self.pos.x - ex, self.pos.y)).x
+                let dr = self.depth_texture.sample(vec2(self.pos.x + ex, self.pos.y)).x
+                let du = self.depth_texture.sample(vec2(self.pos.x, self.pos.y - ey)).x
+                let dd = self.depth_texture.sample(vec2(self.pos.x, self.pos.y + ey)).x
+                let lap = (dl + dr + du + dd) * 0.25 - dc
+                // Perspective depth is wildly non-linear — the same millimetre
+                // is a huge delta near the camera and nothing far away. Divide
+                // by a local scale so one threshold works across the frame.
+                let dscale = max(1.0 - dc, 0.0002)
+                let curv = lap / dscale
+                // Nothing was drawn here (cleared depth): no geometry, no AO.
+                let onbody = step(dc, 0.99999)
+                let cavity = clamp(0.0 - curv * self.edge_ao.z, 0.0, 1.0) * onbody
+                let ridge = clamp(curv * self.edge_ao.w, 0.0, 1.0) * onbody
+                let shade = clamp(1.0 - cavity - ridge, 0.0, 1.0)
                 let ndc_x = self.pos.x * 2.0 - 1.0
                 let ndc_y = 1.0 - self.pos.y * 2.0
                 let dir = normalize(
@@ -616,9 +653,9 @@ pub mod composite_shader {
                 let bg = bg0 + (vec3(1.0, 0.99, 0.94) * disc
                     + vec3(1.0, 0.88, 0.62) * halo) * self.light_dir.w
                 return vec4(
-                    scene.x + bg.x * (1.0 - scene.w),
-                    scene.y + bg.y * (1.0 - scene.w),
-                    scene.z + bg.z * (1.0 - scene.w),
+                    scene.x * shade + bg.x * (1.0 - scene.w),
+                    scene.y * shade + bg.y * (1.0 - scene.w),
+                    scene.z * shade + bg.z * (1.0 - scene.w),
                     1.0
                 )
             }
@@ -761,6 +798,7 @@ impl DrawGridPlane {
 #[derive(Script, ScriptHook, Debug)]
 #[repr(C)]
 pub struct DrawSceneComposite {
+
     #[deref]
     pub draw_super: DrawQuad,
     /// xyz = camera right, w = tan(fov_x / 2)
@@ -775,6 +813,10 @@ pub struct DrawSceneComposite {
     /// xyz = direction towards the lamp, w = lamp switched on (0/1)
     #[live(vec4(-0.35, 0.84, 0.42, 0.0))]
     pub light_dir: Vec4f,
+    /// x,y = one texel of the scene target in uv; z = cavity strength;
+    /// w = edge strength. Zero z and w to switch the effect off entirely.
+    #[live(vec4(0.001, 0.001, 0.0, 0.0))]
+    pub edge_ao: Vec4f,
     /// sky colour at the horizon (also what the ground hazes into)
     #[live(vec4(1.0, 0.985, 0.985, 1.0))]
     pub sky_horizon: Vec4f,
