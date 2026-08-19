@@ -25,6 +25,10 @@ makepad-xr = { git = "https://github.com/makepad/makepad", branch = "dev" }
 urdf-rs = "0.9"
 glam = "0.29"
 stl_io = "0.7"
+# COLLADA is XML with pervasive id/url cross-references (a triangle list
+# points at sources, sources at float arrays, materials at effects), so a
+# read-only DOM is the right shape. roxmltree has no dependencies of its own.
+roxmltree = "0.20"
 serde_json = "1"
 
 # episode playback (parquet) is native-only and optional; see the `episode`

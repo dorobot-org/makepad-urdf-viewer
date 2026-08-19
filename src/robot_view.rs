@@ -10,8 +10,44 @@
 use makepad_widgets::*;
 use makepad_xr::scene::*;
 
-use crate::render::draw::{DrawGridPlane, DrawRobotMesh, DrawSceneComposite};
+use crate::render::draw::{DrawGridPlane, DrawRobotMesh, DrawRobotReflect, DrawSceneComposite, DrawShadowDepth};
 use crate::robot::{load_any, load_robot, ForwardKinematics, Robot};
+
+/// Mesh registry keyed by caller-chosen ids, with (geometry, local center,
+/// local radius) per entry. A named type rather than the bare HashMap:
+/// makepad's `Script` derive parses a restricted type grammar and rejects
+/// nested generics outright.
+#[derive(Default)]
+pub struct ExternalMeshes(std::collections::HashMap<u64, (Geometry, [f32; 3], f32)>);
+
+impl std::ops::Deref for ExternalMeshes {
+    type Target = std::collections::HashMap<u64, (Geometry, [f32; 3], f32)>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for ExternalMeshes {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// One posed instance of a registered external mesh, in the source's Z-up
+/// world — the same convention URDF and terrain use; the viewer applies its
+/// own Z-up→Y-up world transform on top.
+#[derive(Clone, Debug)]
+pub struct ExternalItem {
+    pub mesh_key: u64,
+    /// Column-major 4x4.
+    pub transform: [f32; 16],
+    /// Per-axis scale of the mesh's local coordinates (the shader corrects
+    /// normals for it), so unit primitives serve every size.
+    pub scale: [f32; 3],
+    pub color: [f32; 4],
+    pub roughness: f32,
+    pub metallic: f32,
+}
 
 script_mod! {
     use mod.prelude.widgets.*
@@ -26,14 +62,24 @@ script_mod! {
         // model to show; leave empty and call `load_robot` from Rust instead
         urdf: ""
         assets: ""
-        // environment
+        // environment — the viewer's own daylight look. LOOKS ARE THE
+        // HOST'S: these defaults stay as this app authored them, and a host
+        // that wants another palette (nexus-studio's menagerie look, with
+        // its checker floor and mirror) sets it where it instantiates the
+        // widget. A default here repaints every embedder that never asked.
         show_grid: true
         sky_horizon: #xFFFBFB
         sky_zenith: #xFAE5E7
         ground_color: #xFFFFC5
+        ground2_color: #xFFFFC5
         grid_color: #x6B6A3D
+        floor_reflectance: 0.0
+        material_roughness: 0.42
+        material_metallic: 0.10
         draw_bg: mod.draw.DrawSceneComposite{}
         draw_mesh: mod.draw.DrawRobotMesh{}
+        draw_shadow: mod.draw.DrawShadowDepth{}
+        draw_reflect: mod.draw.DrawRobotReflect{}
         draw_grid: mod.draw.DrawGridPlane{}
         camera: mod.widgets.XrCamera{
             fov_y: 45.0
@@ -120,6 +166,32 @@ pub enum RobotViewAction {
     LoadFailed { path: String, error: String },
 }
 
+/// Offscreen supersampling factor for the 3D pass. 2.0 = 4 samples/pixel
+/// after the composite's bilinear downsample; the cost is 4x the fragment
+/// work on a pass that draws a few hundred thousand triangles, which is
+/// nothing next to having a readable silhouette.
+const SSAA_SCALE: f64 = 2.0;
+
+/// Shadow map resolution. 2048 is what MuJoCo's Filament backend defaults to
+/// and is ample for a box fitted to one robot.
+const SHADOW_MAP_SIZE: usize = 2048;
+/// Cascade count.
+///
+/// Two, where makepad's CSM uses three. Its cascades slice a view frustum for
+/// a village-scale world, and the far rungs of that ladder earn their keep.
+/// Here the scene is ONE robot, and the resolution problem has a different
+/// shape: the box has to cover the caster *and* the ground its shadow falls
+/// on, and those two want opposite extents. So the split runs along the
+/// SHADOW rather than along view depth —
+///
+///   0 = the caster alone, tight, where a contact shadow is actually read
+///   1 = caster + ground footprint, loose, carrying the long tail
+///
+/// Each is fitted by makepad's rules (sphere extent, texel-snapped origin,
+/// bias derived from its own texel size); only the choice of what each one
+/// covers is ours.
+const CSM_N: usize = 2;
+
 const DEFAULT_LINK_COLOR: [f32; 4] = [0.62, 0.65, 0.70, 1.0];
 const SELECTED_TINT: [f32; 3] = [1.0, 0.75, 0.25];
 
@@ -149,14 +221,30 @@ pub struct RobotView {
     sky_zenith: Vec4f,
     #[live(vec4(1.0, 1.0, 0.773, 1.0))]
     ground_color: Vec4f,
+    /// second checker tone (equal to ground_color = no checker)
+    #[live(vec4(1.0, 1.0, 0.773, 1.0))]
+    ground2_color: Vec4f,
     #[live(vec4(0.42, 0.41, 0.24, 1.0))]
     grid_color: Vec4f,
+    /// mirror-floor blend weight (0 = no reflection), flat scenes only
+    #[live(0.0)]
+    floor_reflectance: f32,
+    /// robot-surface microfacet roughness (0.04 polished … 1 matte)
+    #[live(0.42)]
+    material_roughness: f32,
+    /// robot-surface metalness (0 dielectric … 1 metal)
+    #[live(0.10)]
+    material_metallic: f32,
     #[live]
     draw_bg: DrawSceneComposite,
     #[live]
     draw_mesh: DrawRobotMesh,
     #[live]
     draw_grid: DrawGridPlane,
+    #[live]
+    draw_shadow: DrawShadowDepth,
+    #[live]
+    draw_reflect: DrawRobotReflect,
     #[live(vec4(0.051, 0.067, 0.091, 1.0))]
     clear_color: Vec4f,
     #[live]
@@ -165,6 +253,24 @@ pub struct RobotView {
     pass: DrawPass,
     #[new]
     draw_list: DrawList,
+    #[new]
+    shadow_pass: DrawPass,
+    #[new]
+    shadow_list: DrawList,
+    #[new]
+    shadow_texture: Texture,
+    #[new]
+    shadow_depth_texture: Texture,
+    #[rust]
+    light_vp: Mat4f,
+    /// Per-cascade light view-projection, WITHOUT the atlas slot transform:
+    /// the receiver tests containment in each cascade's own clip box, then
+    /// maps into the shared map. The pass applies the slot on top.
+    #[rust]
+    csm_vp: [Mat4f; CSM_N],
+    /// Per-cascade depth bias in z01, derived from that cascade's texel size.
+    #[rust]
+    csm_bias: [f32; CSM_N],
     #[new]
     color_texture: Texture,
     #[new]
@@ -187,6 +293,14 @@ pub struct RobotView {
     terrain_geometry: Option<Geometry>,
     #[rust(0usize)]
     terrain_tris: usize,
+    /// Externally-fed scene: a mesh registry and a posed instance list, for
+    /// callers (the mjvScene bridge) that bring whole worlds of their own.
+    /// While items exist they replace the grid floor and the mirror — an
+    /// external scene carries its own ground.
+    #[rust]
+    external_meshes: ExternalMeshes,
+    #[rust]
+    external_items: Vec<ExternalItem>,
     #[rust(0.05f32)]
     grid_spacing: f32,
     #[rust(2.0f32)]
@@ -218,7 +332,10 @@ pub struct RobotView {
     light_yaw: f32,
     #[rust(0.80f32)]
     light_pitch: f32,
-    #[rust(false)]
+    /// On by default: MuJoCo's directional light always shines, and with the
+    /// lamp off the key runs at 35% and ground seen at grazing angles goes
+    /// near-black (the headlight fades with N·V). Alt+drag still moves it.
+    #[rust(true)]
     light_on: bool,
     #[rust]
     light_last_abs: Option<DVec2>,
@@ -276,6 +393,42 @@ impl RobotView {
         self.pass
             .set_depth_texture(cx, &self.depth_texture, DrawPassClearDepth::ClearWith(1.0));
         cx.passes[self.pass.draw_pass_id()].keep_camera_matrix = true;
+
+        // Shadow map: a float colour target, because makepad binds DepthD32
+        // as a pass attachment with no path to sample it as a texture. Fixed
+        // size — it covers a box fitted to the robot, so it does not need to
+        // follow the viewport.
+        // RenderBGRAu8, not RenderRGBAf32: the f32 render target sampled as
+        // solid black in the lit pass (unbound-texture signature), while this
+        // is the exact format the composite already samples successfully.
+        // Depth is packed across RGB below to recover the precision.
+        self.shadow_texture = Texture::new_with_format(
+            cx,
+            TextureFormat::RenderBGRAu8 {
+                size: TextureSize::Auto,
+                initial: true,
+            },
+        );
+        self.shadow_depth_texture = Texture::new_with_format(
+            cx,
+            TextureFormat::DepthD32 {
+                size: TextureSize::Auto,
+                initial: true,
+            },
+        );
+        self.shadow_pass.set_color_texture(
+            cx,
+            &self.shadow_texture,
+            // Cleared to hi=1, lo=1 (alpha 1 — see the encoder note): decodes
+            // to just past the far plane, so unrendered texels never occlude.
+            DrawPassClearColor::ClearWith(vec4(1.0, 1.0, 0.0, 1.0)),
+        );
+        self.shadow_pass.set_depth_texture(
+            cx,
+            &self.shadow_depth_texture,
+            DrawPassClearDepth::ClearWith(1.0),
+        );
+        cx.passes[self.shadow_pass.draw_pass_id()].keep_camera_matrix = true;
 
         // No built-in model: a library widget shows whatever the host asked
         // for, either via the `urdf`/`assets` properties or `load_robot`.
@@ -488,6 +641,103 @@ impl RobotView {
 
     pub fn terrain_triangle_count(&self) -> usize {
         self.terrain_tris
+    }
+
+    /// Register (or replace) an external mesh under `key`: flat xyz
+    /// positions, matching per-vertex normals, triangle indices — the raw
+    /// shape callers like the mjvScene bridge already hold. Bounds are kept
+    /// for the shadow box.
+    pub fn upsert_external_mesh(
+        &mut self,
+        cx: &mut Cx,
+        key: u64,
+        positions: &[f32],
+        normals: &[f32],
+        indices: &[u32],
+    ) {
+        let n = positions.len() / 3;
+        let mut vertices = Vec::with_capacity(n * 8);
+        let mut bmin = [f32::MAX; 3];
+        let mut bmax = [f32::MIN; 3];
+        for i in 0..n {
+            let p = &positions[i * 3..i * 3 + 3];
+            let nrm: [f32; 3] = match normals.get(i * 3..i * 3 + 3) {
+                Some(s) => [s[0], s[1], s[2]],
+                None => [0.0, 0.0, 1.0],
+            };
+            vertices.extend_from_slice(&[p[0], p[1], p[2], 1.0, nrm[0], nrm[1], nrm[2], 0.0]);
+            for k in 0..3 {
+                bmin[k] = bmin[k].min(p[k]);
+                bmax[k] = bmax[k].max(p[k]);
+            }
+        }
+        let center = [
+            (bmin[0] + bmax[0]) * 0.5,
+            (bmin[1] + bmax[1]) * 0.5,
+            (bmin[2] + bmax[2]) * 0.5,
+        ];
+        let dx = bmax[0] - bmin[0];
+        let dy = bmax[1] - bmin[1];
+        let dz = bmax[2] - bmin[2];
+        let radius = 0.5 * (dx * dx + dy * dy + dz * dz).sqrt();
+        let geometry = Geometry::new(cx);
+        geometry.update(cx, indices.to_vec(), vertices);
+        self.external_meshes.insert(key, (geometry, center, radius.max(0.001)));
+    }
+
+    /// Replace the posed instance list of the external scene.
+    pub fn set_external_items(&mut self, cx: &mut Cx, items: Vec<ExternalItem>) {
+        self.external_items = items;
+        self.area.redraw(cx);
+    }
+
+    /// Drop the external scene entirely (registry included).
+    pub fn clear_external(&mut self, cx: &mut Cx) {
+        self.external_items.clear();
+        self.external_meshes.clear();
+        self.area.redraw(cx);
+    }
+
+    /// Frame the camera on the external scene's robot-scale content — the
+    /// same job `frame_camera_on` does at URDF load, with the same
+    /// ground-swallowing filter the shadow box uses.
+    pub fn frame_camera_on_external(&mut self, cx: &mut Cx) {
+        let mut bmin = glam::Vec3::MAX;
+        let mut bmax = glam::Vec3::MIN;
+        let mut any = false;
+        for it in &self.external_items {
+            let Some((_, mc, mr)) = self.external_meshes.get(&it.mesh_key) else { continue };
+            let sc = it.scale[0].max(it.scale[1]).max(it.scale[2]).max(1e-4);
+            let r = mr * sc;
+            if r > 6.0 {
+                continue;
+            }
+            let t = glam::Mat4::from_cols_array(&it.transform);
+            let local = glam::Vec3::new(
+                mc[0] * it.scale[0],
+                mc[1] * it.scale[1],
+                mc[2] * it.scale[2],
+            );
+            let c = t.transform_point3(local);
+            bmin = bmin.min(c - glam::Vec3::splat(r));
+            bmax = bmax.max(c + glam::Vec3::splat(r));
+            any = true;
+        }
+        if !any {
+            return;
+        }
+        // Z-up center, same axis mapping as frame_camera_on / set_camera_target.
+        let center = (bmin + bmax) * 0.5;
+        let radius = ((bmax - bmin).length() * 0.5).max(0.05);
+        let distance = (radius * 3.1).clamp(0.15, 40.0);
+        self.camera.desktop_target = vec3(center.x, center.z.max(0.2), -center.y);
+        self.camera.distance = distance;
+        self.pan_offset = vec2(0.0, 0.0);
+        self.area.redraw(cx);
+    }
+
+    pub fn external_counts(&self) -> (usize, usize) {
+        (self.external_meshes.len(), self.external_items.len())
     }
 
     /// Move the orbit pivot to a point in the model's own (Z-up) frame.
@@ -774,6 +1024,235 @@ impl RobotView {
         self.area.redraw(cx);
     }
 
+
+    /// Orthographic view-projection looking down the key light, fitted to the
+    /// robot's world bounds (plus the ground it stands on, so the shadow it
+    /// casts is inside the box). Recomputed per frame because both the light
+    /// and the robot move.
+    fn compute_light_vp(&mut self) -> glam::Mat4 {
+        let world = z_up_to_y_up();
+        let mut bmin = glam::Vec3::MAX;
+        let mut bmax = glam::Vec3::MIN;
+        let mut any = false;
+        if let Some(robot) = &self.robot {
+            let (rmin, rmax) = robot.bounds_world();
+            let c = world.transform_point3((rmin + rmax) * 0.5);
+            let r = ((rmax - rmin).length() * 0.5).max(0.05);
+            bmin = bmin.min(c - glam::Vec3::splat(r));
+            bmax = bmax.max(c + glam::Vec3::splat(r));
+            any = true;
+        }
+        // External items join the box — except grounds (planes, heightfields,
+        // anything huge), which would stretch the map until nothing has
+        // resolution. They receive shadows; they do not shape the box.
+        for it in &self.external_items {
+            let Some((_, mc, mr)) = self.external_meshes.get(&it.mesh_key) else { continue };
+            let sc = it.scale[0].max(it.scale[1]).max(it.scale[2]).max(1e-4);
+            let r = mr * sc;
+            if r > 6.0 {
+                continue;
+            }
+            let t = glam::Mat4::from_cols_array(&it.transform);
+            let local = glam::Vec3::new(
+                mc[0] * it.scale[0],
+                mc[1] * it.scale[1],
+                mc[2] * it.scale[2],
+            );
+            let c = world.transform_point3(t.transform_point3(local));
+            bmin = bmin.min(c - glam::Vec3::splat(r));
+            bmax = bmax.max(c + glam::Vec3::splat(r));
+            any = true;
+        }
+        let (caster_c, caster_r, ground_y) = if any {
+            (
+                (bmin + bmax) * 0.5,
+                ((bmax - bmin).length() * 0.5).max(0.05),
+                bmin.y,
+            )
+        } else {
+            (glam::Vec3::new(0.0, 0.2, 0.0), 0.5, 0.0)
+        };
+        // Pad so the ground under the robot — which receives the shadow — is
+        // inside the box, and so a limb swinging out does not clip its own
+        // shadow off at the edge.
+        //
+        // Then the two stability rules makepad's own CSM fitter documents
+        // (libs/render/src/shadow_csm.rs), both of which this fitter lacked.
+        // They matter more here than in the map view they were written for:
+        // the caster is a WALKING robot, so `bounds_world` re-walks every
+        // link each frame and both inputs move continuously.
+        //
+        //  * QUANTISE THE RADIUS. A swinging arm resized the ortho box every
+        //    frame, so the map rescaled, every texel covered a different
+        //    patch of world, and the edges breathed — makepad fits cascades
+        //    to a bounding SPHERE for the same reason, its radius being
+        //    invariant where a tight box's is not.
+        //
+        //  * SNAP THE ORIGIN TO WHOLE TEXELS. Sub-texel translation
+        //    re-rasterises every edge each frame (makepad: "the crawling-edge
+        //    artifact"), and as the robot walks the box translates with it —
+        //    so the shadow crawled against the very ground it should have
+        //    been lying still on.
+        let l = self.light_vec();
+        let dir = glam::Vec3::new(l[0], l[1], l[2]).normalize_or_zero();
+        let dir = if dir.length_squared() < 1e-6 { glam::Vec3::Y } else { dir };
+
+        // Cascade 1 covers the caster AND the ground it throws onto. A box
+        // sized to the caster alone is correct only for an overhead sun: at a
+        // grazing angle the shadow reaches height/tan(pitch) across the
+        // floor, far outside such a box, and everything past the edge clamps
+        // to the border texel — the long smear a low sun produced, which read
+        // as a broken projection rather than as a box too small.
+        //
+        // The reach is bounded in caster radii: unbounded, it runs to
+        // infinity as the sun nears the horizon and takes the texel density
+        // with it, trading the smear for a blur. That bound is also exactly
+        // why cascade 0 exists — it keeps a tight, high-resolution box on the
+        // caster, so the contact shadow stays crisp however far the tail runs.
+        const MAX_REACH: f32 = 3.0;
+        let dy_l = dir.y.abs().max(0.20);
+        let drop = (caster_c.y - ground_y).max(0.0);
+        let reach = (drop / dy_l).min(caster_r * MAX_REACH);
+        let foot = caster_c - dir * reach;
+
+        let fits = [
+            // 0: the caster, tight.
+            (caster_c, caster_r * 1.15),
+            // 1: caster + footprint.
+            ((caster_c + foot) * 0.5, (caster_c - foot).length() * 0.5 + caster_r),
+        ];
+
+        for (ci, (c, rad)) in fits.iter().enumerate() {
+            // QUANTISE THE EXTENT. `bounds_world` re-walks every link each
+            // frame, so a swinging arm resized the box continuously: the map
+            // rescaled, every texel covered a different patch of world, and
+            // the edges breathed. makepad fits to a bounding SPHERE for the
+            // same reason — its radius is invariant where a tight box's is not.
+            const R_STEP: f32 = 0.25;
+            let r = (rad / R_STEP).ceil() * R_STEP;
+            let eye = *c + dir * (r * 2.0);
+            let up = if dir.y.abs() > 0.95 { glam::Vec3::Z } else { glam::Vec3::Y };
+            let view = glam::Mat4::look_at_rh(eye, *c, up);
+            let proj = glam::Mat4::orthographic_rh(-r, r, -r, r, 0.01, r * 4.0);
+            let vp = proj * view;
+
+            // SNAP THE ORIGIN TO WHOLE TEXELS. Sub-texel translation
+            // re-rasterises every edge each frame — makepad calls it the
+            // crawling-edge artifact — and as the robot walks the box
+            // translates with it, so the shadow crawled against the very
+            // ground it should have been lying still on. Snapping is per
+            // cascade because each has its own texel size.
+            //
+            // Measured at a FIXED world point, not the box centre. The view
+            // was built to look at the centre, so the centre projects to
+            // (0,0) by construction and snapping it corrected nothing — the
+            // no-op review caught. The world origin's projected position is
+            // where the box's translation actually shows up.
+            let cw = SHADOW_MAP_SIZE as f32 * 0.5;
+            let o = vp.project_point3(glam::Vec3::ZERO);
+            let dx = (o.x * cw).round() / cw - o.x;
+            let dy = (o.y * cw).round() / cw - o.y;
+            let vp = glam::Mat4::from_translation(glam::Vec3::new(dx, dy, 0.0)) * vp;
+
+            self.csm_vp[ci] = m4(vp);
+            // Bias as makepad derives bias01: the world size of one texel
+            // times 1.5, plus a 5 mm floor for raster error, expressed in the
+            // map's depth range. A constant cannot serve both cascades — they
+            // differ in extent by several times over.
+            let texel_world = (2.0 * r) / SHADOW_MAP_SIZE as f32;
+            self.csm_bias[ci] = (texel_world * 1.5 + 0.005) / (4.0 * r);
+        }
+        // Kept for the debug view, which draws the widest cascade.
+        glam::Mat4::from_cols_array(&self.csm_vp[CSM_N - 1].v)
+    }
+
+
+    /// Render every link (and the terrain) into the shadow map from the
+    /// light's point of view. Same geometry as the lit pass — only the
+    /// transform and the output differ.
+    fn draw_shadow_pass(&mut self, cx: &mut Cx2d, scene_state: SceneState3D) {
+        if self.robot.is_none() && self.external_items.is_empty() {
+            return;
+        }
+        let light_vp = self.compute_light_vp();
+        self.light_vp = m4(light_vp);
+        // set_size takes LOGICAL pixels and the platform multiplies by the
+        // dpi factor. A Fixed-size texture therefore disagreed with the pass
+        // on retina (2048 texture, 4096 viewport): the map was rasterised at
+        // twice the target's size, so every lookup landed scaled — the
+        // registration error. Auto textures + a logical size keep them equal.
+        let dpi = cx.cx.current_dpi_factor().max(1.0);
+        // WIDE, not split. Packing N cascades into a square map would leave
+        // each slot SIZE/N x SIZE for a SQUARE ortho box — half the
+        // resolution across, full resolution down, so a round shadow would
+        // rasterise into an oval. Widening the atlas instead gives every
+        // cascade a full SIZE x SIZE slot.
+        self.shadow_pass.set_size(cx.cx, DVec2 {
+            x: (SHADOW_MAP_SIZE * CSM_N) as f64 / dpi,
+            y: SHADOW_MAP_SIZE as f64 / dpi,
+        });
+        cx.make_child_pass(&self.shadow_pass);
+        cx.begin_pass(&self.shadow_pass, None);
+        {
+            // Same scoping as draw_scene: the draw list and the instances must
+            // live in ONE Cx3d, or the instances are added outside the list
+            // that the pass actually submits and the map comes out empty.
+            let cx3d = &mut Cx3d::new(cx.cx);
+            self.shadow_list.begin_always(cx3d);
+            cx3d.begin_scene_3d(scene_state);
+            let previous_world = cx3d.set_scene_world_transform_3d(m4(glam::Mat4::IDENTITY));
+            let world = z_up_to_y_up();
+            self.draw_shadow.scale = vec3(1.0, 1.0, 1.0);
+            let mut shadow_draws = 0usize;
+            // Every cascade inside ONE begin/end: a second begin_pass would
+            // clear the slot the first one just filled. The slot transform
+            // rides on the projection, so all that changes per cascade is
+            // light_vp.
+            for ci in 0..CSM_N {
+            // The slot is a separate uniform rather than baked into light_vp:
+            // baked in, the hardware clip volume spans the WHOLE atlas, so
+            // geometry outside this cascade's own box (a big external ground
+            // plane, say) rasterised into the neighbouring cascade's slot.
+            // The shader clips against the pre-slot box itself and discards.
+            self.draw_shadow.light_vp = self.csm_vp[ci];
+            let n = CSM_N as f32;
+            self.draw_shadow.slot = vec4((2.0 * ci as f32 + 1.0 - n) / n, 1.0 / n, 0.0, 0.0);
+            if let Some(robot) = &self.robot {
+                for (i, _link) in robot.links.iter().enumerate() {
+                    let Some(Some(slot)) = self.geometries.get(i) else { continue };
+                    let Some(geometry) = self.geometry_pool.get(*slot) else { continue };
+                    let Some(transform) = robot.get_link_transform(i) else { continue };
+                    self.draw_shadow.transform = m4(world * transform);
+                    let gid = geometry.geometry_id();
+                    self.draw_shadow.draw(cx3d, gid);
+                    shadow_draws += 1;
+                }
+            }
+            // External items cast too — that is most of the point of feeding
+            // a whole scene through here.
+            for it in &self.external_items {
+                let Some((geometry, _, _)) = self.external_meshes.get(&it.mesh_key) else { continue };
+                self.draw_shadow.transform = m4(world * glam::Mat4::from_cols_array(&it.transform));
+                self.draw_shadow.scale = vec3(it.scale[0], it.scale[1], it.scale[2]);
+                let gid = geometry.geometry_id();
+                self.draw_shadow.draw(cx3d, gid);
+                shadow_draws += 1;
+            }
+            self.draw_shadow.scale = vec3(1.0, 1.0, 1.0);
+            }
+            if std::env::var("URDF_SHADOW_DEBUG").is_ok() && self.dbg_frames % 120 == 0 {
+                eprintln!("[shadow] {shadow_draws} draws over {CSM_N} cascades, bias={:?}",
+                    self.csm_bias);
+            }
+            if let Some(prev) = previous_world {
+                cx3d.set_scene_world_transform_3d(prev);
+            }
+            cx3d.end_scene_3d();
+            self.shadow_list.end(cx3d);
+        }
+        cx.end_pass(&self.shadow_pass);
+    }
+
     fn draw_scene(&mut self, cx: &mut Cx3d, scene_state: SceneState3D) {
         self.draw_list.begin_always(cx);
         cx.begin_scene_3d(scene_state);
@@ -782,18 +1261,113 @@ impl RobotView {
         let mut dbg_drawn = 0usize;
         let mut dbg_can = 0usize;
 
+        // Verification hooks: URDF_LIGHT_PITCH / URDF_LIGHT_YAW pin the lamp
+        // (radians). Pitch 1.5 is the registration oracle — a near-vertical
+        // light must drop the shadow exactly onto the footprint, so any
+        // offset there is a projection bug, not a viewing-angle judgement.
+        if let Ok(v) = std::env::var("URDF_LIGHT_PITCH") {
+            if let Ok(pitch) = v.parse::<f32>() {
+                self.light_pitch = pitch;
+            }
+        }
+        if let Ok(v) = std::env::var("URDF_LIGHT_YAW") {
+            if let Ok(yaw) = v.parse::<f32>() {
+                self.light_yaw = yaw;
+            }
+        }
         let l = self.light_vec();
         self.draw_mesh.key_light = vec4(l[0], l[1], l[2], if self.light_on { 1.0 } else { 0.0 });
+        // Ambient follows the environment the composite actually paints, so a
+        // re-themed sky relights the robot instead of leaving it lit for the
+        // previous one. Sky ambient is the horizon/zenith average (what a
+        // surface facing up integrates); ground ambient is the plane's colour
+        // dimmed to a plausible bounce.
+        // Shadow lookup state — matrix from the pass we just rendered, texel
+        // size so the PCF taps land on neighbouring texels.
+        self.draw_mesh.light_vp = self.light_vp;
+        let texel = 1.0 / SHADOW_MAP_SIZE as f32;
+        // x,y = texel size inside one cascade slot; z,w = the two cascades'
+        // depth biases. The slope term rides the selected cascade's bias in
+        // the shader, so it scales with that cascade's texel rather than
+        // being a constant that suits only one of them.
+        self.draw_mesh.shadow_texel = vec4(texel, texel, self.csm_bias[0], self.csm_bias[1]);
+        self.draw_mesh.csm_vp0 = self.csm_vp[0];
+        self.draw_mesh.csm_vp1 = self.csm_vp[1];
+        // The shadow pass rasterises RAW light_vp clip coordinates, without
+        // the per-backend projection fixup makepad bakes into its own camera
+        // matrices. Metal rasterises NDC +Y to row 0 (top-left origin) but
+        // samples v=0 at row 0, so the lookup must flip V; GL's bottom-left
+        // origin makes write and read agree, so wasm must NOT flip. This is
+        // the OPPOSITE of the composite pass's rule, whose source is a
+        // makepad-projected target with the convention already baked in.
+        // Proven with an oblique light: unflipped, the lookup mirrors the map
+        // across the light-view centreline — through the feet — painting an
+        // upside-down silhouette on the near floor; flipped, the silhouette
+        // lies flat with the head at the far end and feet anchored.
+        // Shadows default ON (URDF_SHADOW=0 disables).
+        let shadows_on = std::env::var("URDF_SHADOW").map(|v| v != "0").unwrap_or(true);
+        self.draw_mesh.shadow_strength = if shadows_on { 0.75 } else { 0.0 };
+        self.draw_grid.shadow_strength = self.draw_mesh.shadow_strength;
+        let flip = std::env::var("URDF_SHADOW_FLIP")
+            .map(|v| v != "0")
+            .unwrap_or(!cfg!(target_arch = "wasm32"));
+        self.draw_mesh.shadow_flip = if flip { 1.0 } else { 0.0 };
+        self.draw_mesh.draw_vars.set_texture(0, &self.shadow_texture);
+
+        let sky_amb = 0.23; // 0.46 of the horizon/zenith average
+        self.draw_mesh.ambient_sky = vec4(
+            (self.sky_horizon.x + self.sky_zenith.x) * sky_amb,
+            (self.sky_horizon.y + self.sky_zenith.y) * sky_amb,
+            (self.sky_horizon.z + self.sky_zenith.z) * sky_amb,
+            1.0,
+        );
+        self.draw_mesh.ambient_ground = vec4(
+            self.ground_color.x * 0.40,
+            self.ground_color.y * 0.40,
+            self.ground_color.z * 0.40,
+            1.0,
+        );
+
+        // The specular IBL mirrors the raw palette, not the pre-averaged
+        // ambient: a reflection of the sky must be the sky.
+        self.draw_mesh.env_horizon = self.sky_horizon;
+        self.draw_mesh.env_zenith = self.sky_zenith;
+        self.draw_mesh.env_ground = self.ground_color;
+        self.draw_mesh.debug_mode =
+            if std::env::var("URDF_PBR_DEBUG").is_ok() { 1.0 } else { 0.0 };
 
         // Terrain first: it is opaque world geometry the robot stands on, and
-        // drawing it before the links keeps the depth order obvious.
+        // drawing it before the links keeps the depth order obvious. Matte:
+        // soil reflects no sky.
         if let Some(terrain) = &self.terrain_geometry {
             self.draw_mesh.transform = m4(world);
             self.draw_mesh.color = vec4(0.34, 0.33, 0.30, 1.0);
             self.draw_mesh.scale = vec3(1.0, 1.0, 1.0);
             self.draw_mesh.depth_clip = 0.0;
+            self.draw_mesh.roughness = 0.95;
+            self.draw_mesh.metallic = 0.0;
             let gid = terrain.geometry_id();
             self.draw_mesh.draw(cx, gid);
+        }
+        self.draw_mesh.roughness = self.material_roughness;
+        self.draw_mesh.metallic = self.material_metallic;
+
+        // Externally-fed world (the mjvScene bridge): every item carries its
+        // own material; the robot material is restored afterwards.
+        if !self.external_items.is_empty() {
+            for it in &self.external_items {
+                let Some((geometry, _, _)) = self.external_meshes.get(&it.mesh_key) else { continue };
+                self.draw_mesh.transform = m4(world * glam::Mat4::from_cols_array(&it.transform));
+                self.draw_mesh.color = vec4(it.color[0], it.color[1], it.color[2], it.color[3]);
+                self.draw_mesh.scale = vec3(it.scale[0], it.scale[1], it.scale[2]);
+                self.draw_mesh.roughness = it.roughness;
+                self.draw_mesh.metallic = it.metallic;
+                self.draw_mesh.depth_clip = 0.0;
+                let gid = geometry.geometry_id();
+                self.draw_mesh.draw(cx, gid);
+            }
+            self.draw_mesh.roughness = self.material_roughness;
+            self.draw_mesh.metallic = self.material_metallic;
         }
 
         let selected_link = self.selected_link_index();
@@ -836,15 +1410,52 @@ impl RobotView {
         let grid_geom = self.ensure_grid_geometry(cx.cx);
         self.draw_grid.color = self.grid_color;
         self.draw_grid.soil_color = self.ground_color;
+        self.draw_grid.soil2_color = self.ground2_color;
         // the plane must fade into the same colour the sky shows there
         self.draw_grid.haze_color = self.sky_horizon;
         self.draw_grid.extent = self.grid_extent;
         self.draw_grid.spacing = self.grid_spacing;
         self.draw_grid.plane_y = self.grid_y;
         self.draw_grid.px_scale = self.px_scale;
+        self.draw_grid.light_vp = self.light_vp;
+        let gtexel = 1.0 / SHADOW_MAP_SIZE as f32;
+        self.draw_grid.shadow_texel = vec4(gtexel, gtexel, self.csm_bias[0], self.csm_bias[1]);
+        self.draw_grid.csm_vp0 = self.csm_vp[0];
+        self.draw_grid.csm_vp1 = self.csm_vp[1];
+        self.draw_grid.shadow_flip = self.draw_mesh.shadow_flip;
+        self.draw_grid.draw_vars.set_texture(0, &self.shadow_texture);
+        self.draw_grid.debug_shadow =
+            if std::env::var("URDF_SHADOW_DEBUG").is_ok() { 1.0 } else { 0.0 };
         self.draw_grid.depth_clip = 0.0;
-        if self.show_grid {
+        // An external scene brings its own ground; the viewer's grid floor
+        // would z-fight it at y = 0.
+        if self.show_grid && self.external_items.is_empty() {
             self.draw_grid.draw(cx, grid_geom);
+            // Mirror floor: the robot reflected through the ground plane,
+            // blended at the material reflectance — MuJoCo's reflectance look.
+            // Flat scenes only; a heightfield has no mirror plane.
+            if self.floor_reflectance > 0.001 && self.terrain_geometry.is_none() {
+                let gy = self.grid_y;
+                let mirror = glam::Mat4::from_translation(glam::Vec3::new(0.0, 2.0 * gy, 0.0))
+                    * glam::Mat4::from_scale(glam::Vec3::new(1.0, -1.0, 1.0));
+                self.draw_reflect.key_light = self.draw_mesh.key_light;
+                self.draw_reflect.ambient_sky = self.draw_mesh.ambient_sky;
+                self.draw_reflect.ambient_ground = self.draw_mesh.ambient_ground;
+                self.draw_reflect.reflect_alpha = self.floor_reflectance;
+                self.draw_reflect.scale = vec3(1.0, 1.0, 1.0);
+                if let Some(robot) = &self.robot {
+                    for (i, link) in robot.links.iter().enumerate() {
+                        let Some(Some(slot)) = self.geometries.get(i) else { continue };
+                        let Some(geometry) = self.geometry_pool.get(*slot) else { continue };
+                        let Some(transform) = robot.get_link_transform(i) else { continue };
+                        let base = link.color.unwrap_or(DEFAULT_LINK_COLOR);
+                        self.draw_reflect.color = vec4(base[0], base[1], base[2], 1.0);
+                        self.draw_reflect.transform = m4(mirror * world * transform);
+                        let gid = geometry.geometry_id();
+                        self.draw_reflect.draw(cx, gid);
+                    }
+                }
+            }
         }
 
         if let Some(previous_world) = previous_world {
@@ -1148,7 +1759,12 @@ impl Widget for RobotView {
         self.ensure_initialized(cx.cx);
         self.ensure_geometries(cx.cx);
         self.camera.set_desktop_viewport_rect(rect);
-        self.pass.set_size(cx, rect.size);
+        // Supersample: makepad has no MSAA render targets (no sample count in
+        // TextureFormat), so the offscreen 3D pass is rendered at SSAA_SCALE x
+        // and the composite's bilinear fetch box-filters it back down. This is
+        // the only antialiasing the robot's silhouette gets — without it the
+        // STL edges crawl visibly while orbiting.
+        self.pass.set_size(cx, rect.size * SSAA_SCALE);
         self.pass.set_color_texture(
             cx,
             &self.color_texture,
@@ -1156,6 +1772,13 @@ impl Widget for RobotView {
         );
         self.pass
             .set_depth_texture(cx, &self.depth_texture, DrawPassClearDepth::ClearWith(1.0));
+
+        // Shadow map first: the lit pass samples it, so it has to be
+        // rendered (and its own child pass closed) before we begin the main
+        // one.
+        if let Some(scene_state) = self.camera.desktop_scene_state(rect, cx.time()) {
+            self.draw_shadow_pass(cx, scene_state);
+        }
 
         cx.make_child_pass(&self.pass);
         cx.begin_pass(&self.pass, None);
@@ -1167,6 +1790,21 @@ impl Widget for RobotView {
         cx.end_pass(&self.pass);
 
         self.draw_bg.set_scene_texture(&self.color_texture);
+        self.draw_bg.draw_vars.set_texture(1, &self.depth_texture);
+        // One texel of the SUPERSAMPLED target, which is what the depth
+        // buffer is: sampling at composite resolution would step over a
+        // whole SSAA block and read the wrong neighbour.
+        let dw = (rect.size.x * SSAA_SCALE).max(1.0) as f32;
+        let dh = (rect.size.y * SSAA_SCALE).max(1.0) as f32;
+        let ao = std::env::var("URDF_AO")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.35);
+        let edge = std::env::var("URDF_EDGE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(0.30);
+        self.draw_bg.edge_ao = vec4(1.0 / dw, 1.0 / dh, ao, edge);
         // camera basis for the directional sky dome in the composite shader
         if let Some(scene_state) = self.camera.desktop_scene_state(rect, cx.time()) {
             let inv = scene_state.view.invert();

@@ -20,6 +20,10 @@ pub struct MeshData {
     pub bounds_min: [f32; 3],
     /// Maximum bounds
     pub bounds_max: [f32; 3],
+    /// Diffuse colour the mesh brought with it, when the format carries one.
+    /// COLLADA does; STL cannot. A URDF link with no material of its own can
+    /// fall back to this instead of defaulting to grey.
+    pub color: Option<[f32; 4]>,
 }
 
 impl MeshData {
@@ -250,6 +254,10 @@ impl MeshData {
     }
 
     /// Append one interleaved vertex: pos(3), id(1), normal(3), uv(2).
+    pub(crate) fn push_vertex_pub(&mut self, pos: [f32; 3], normal: [f32; 3], id: f32) {
+        self.push_vertex(pos, normal, id)
+    }
+
     fn push_vertex(&mut self, pos: [f32; 3], normal: [f32; 3], id: f32) {
         self.vertices.extend_from_slice(&pos);
         self.vertices.push(id);
@@ -625,6 +633,10 @@ impl MeshData {
         let mut combined = MeshData {
             bounds_min: [f32::MAX; 3],
             bounds_max: [f32::MIN; 3],
+            // The first colour any part brought along survives the merge —
+            // ..Default::default() silently reset it to None, which cut the
+            // one wire COLLADA colours had toward the screen.
+            color: meshes.iter().find_map(|m| m.color),
             ..Default::default()
         };
 
@@ -690,6 +702,119 @@ impl MeshData {
     }
 
     /// Make mesh double-sided by duplicating triangles with reversed winding
+    /// Replace per-facet normals with smoothed vertex normals.
+    ///
+    /// STL stores one normal per triangle and no vertex sharing, so a curved
+    /// CAD surface renders as visible facets — every tessellation edge shows
+    /// up as a shading discontinuity. This welds vertices by position and
+    /// averages the facet normals meeting there, weighted by triangle area
+    /// (via the un-normalized cross product, which is proportional to it).
+    ///
+    /// `crease_deg` keeps genuine edges sharp: a facet only contributes to a
+    /// vertex's averaged normal when it lies within that angle of the
+    /// vertex's own facet, so a cylinder's barrel smooths while the rim where
+    /// it meets its end cap stays a hard line. 0 disables smoothing entirely.
+    ///
+    /// Positions are quantized to weld coincident-but-not-bit-identical
+    /// vertices, which STL exporters produce routinely.
+    pub fn smooth_normals(&mut self, crease_deg: f32) {
+        if crease_deg <= 0.0 {
+            return;
+        }
+        let vcount = self.vertices.len() / FLOATS_PER_VERTEX;
+        if vcount == 0 {
+            return;
+        }
+        let cos_crease = crease_deg.to_radians().cos();
+
+        // Weld key: 1e-5 m grid. Finer than any real STL tolerance, coarse
+        // enough to catch float noise between adjacent facets.
+        const WELD: f32 = 1e5;
+        let key = |v: &[f32]| -> (i64, i64, i64) {
+            (
+                (v[0] * WELD).round() as i64,
+                (v[1] * WELD).round() as i64,
+                (v[2] * WELD).round() as i64,
+            )
+        };
+
+        // Bucket every vertex by welded position, carrying its facet normal.
+        let mut buckets: std::collections::HashMap<(i64, i64, i64), Vec<usize>> =
+            std::collections::HashMap::new();
+        for i in 0..vcount {
+            let base = i * FLOATS_PER_VERTEX;
+            buckets
+                .entry(key(&self.vertices[base..base + 3]))
+                .or_default()
+                .push(i);
+        }
+
+        // Facet normals scaled by area: recompute from the triangle rather
+        // than trusting the stored one, since STL exporters are allowed to
+        // write zero normals and some do.
+        let tri_count = self.indices.len() / 3;
+        let mut face_normal = vec![[0.0f32; 3]; tri_count];
+        let mut vert_face = vec![usize::MAX; vcount];
+        for t in 0..tri_count {
+            let (i0, i1, i2) = (
+                self.indices[t * 3] as usize,
+                self.indices[t * 3 + 1] as usize,
+                self.indices[t * 3 + 2] as usize,
+            );
+            let p = |i: usize| {
+                let b = i * FLOATS_PER_VERTEX;
+                glam::Vec3::new(self.vertices[b], self.vertices[b + 1], self.vertices[b + 2])
+            };
+            let (a, b, c) = (p(i0), p(i1), p(i2));
+            let n = (b - a).cross(c - a); // length ∝ 2 * area
+            face_normal[t] = [n.x, n.y, n.z];
+            for i in [i0, i1, i2] {
+                if i < vcount {
+                    vert_face[i] = t;
+                }
+            }
+        }
+
+        let mut out = vec![0.0f32; vcount * 3];
+        for ids in buckets.values() {
+            for &i in ids {
+                let own = vert_face[i];
+                if own == usize::MAX {
+                    continue;
+                }
+                let own_n = glam::Vec3::from(face_normal[own]).normalize_or_zero();
+                let mut acc = glam::Vec3::ZERO;
+                for &j in ids {
+                    let f = vert_face[j];
+                    if f == usize::MAX {
+                        continue;
+                    }
+                    let fj = glam::Vec3::from(face_normal[f]);
+                    // Within the crease angle? (compare normalized, accumulate
+                    // un-normalized so bigger triangles weigh more)
+                    if own_n.dot(fj.normalize_or_zero()) >= cos_crease {
+                        acc += fj;
+                    }
+                }
+                let n = if acc.length_squared() > 1e-20 {
+                    acc.normalize()
+                } else {
+                    own_n
+                };
+                out[i * 3] = n.x;
+                out[i * 3 + 1] = n.y;
+                out[i * 3 + 2] = n.z;
+            }
+        }
+
+        for i in 0..vcount {
+            let base = i * FLOATS_PER_VERTEX;
+            self.vertices[base + 4] = out[i * 3];
+            self.vertices[base + 5] = out[i * 3 + 1];
+            self.vertices[base + 6] = out[i * 3 + 2];
+        }
+    }
+
     pub fn make_double_sided(&mut self) {
         let original_vertex_count = self.vertices.len() / FLOATS_PER_VERTEX;
         let original_index_count = self.indices.len();

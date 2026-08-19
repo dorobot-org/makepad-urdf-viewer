@@ -26,6 +26,11 @@ fn virtual_asset<P: AsRef<Path>>(path: P) -> Option<&'static [u8]> {
 use crate::mesh::MeshData;
 use super::model::{Robot, RobotLink, RobotJoint, JointType};
 
+/// Crease angle for STL normal smoothing. 45 deg keeps machined edges and
+/// chamfers crisp while smoothing the tessellation of curved surfaces —
+/// CAD exports put far more facets around a fillet than the crease itself.
+const SMOOTH_CREASE_DEG: f32 = 45.0;
+
 /// Result type for robot loading operations
 pub type LoadResult<T> = Result<T, RobotError>;
 
@@ -137,6 +142,12 @@ fn build_robot_from_urdf(urdf: &urdf_rs::Robot, assets_base: &str) -> LoadResult
                             bounds_min[i] = bounds_min[i].min(updated_bounds.0[i]);
                             bounds_max[i] = bounds_max[i].max(updated_bounds.1[i]);
                         }
+                        // A colour the mesh format itself carried (COLLADA
+                        // does) fills in when the URDF names none. The URDF
+                        // material stays the stronger voice when both exist.
+                        if robot_link.color.is_none() {
+                            robot_link.color = mesh.color;
+                        }
                         link_meshes.push(mesh);
                     }
                     Err(e) => {
@@ -160,6 +171,10 @@ fn build_robot_from_urdf(urdf: &urdf_rs::Robot, assets_base: &str) -> LoadResult
 
         if !link_meshes.is_empty() {
             let mut combined = MeshData::combine(link_meshes);
+            // Smooth before doubling: the doubled half is a normal-flipped
+            // copy, so smoothing after would average the two sheets together
+            // and cancel them out.
+            combined.smooth_normals(SMOOTH_CREASE_DEG);
             combined.make_double_sided();
             robot_link.mesh_data = Some(combined);
         }
@@ -333,7 +348,7 @@ fn walk(
         }
         let kind = match extension_of(&path.to_string_lossy()).as_deref() {
             Some("urdf") => ModelKind::Urdf,
-            Some("stl") | Some("obj") => ModelKind::Mesh,
+            Some("stl") | Some("obj") | Some("dae") => ModelKind::Mesh,
             _ => continue,
         };
         if kind == ModelKind::Urdf {
@@ -371,7 +386,7 @@ pub fn load_any(path: impl AsRef<Path>) -> LoadResult<Robot> {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| ".".to_string());
     match extension_of(&path.to_string_lossy()).as_deref() {
-        Some("stl") | Some("obj") => load_mesh_as_robot(path),
+        Some("stl") | Some("obj") | Some("dae") => load_mesh_as_robot(path),
         _ => load_robot(path, &assets),
     }
 }
@@ -390,6 +405,7 @@ pub fn load_mesh_as_robot(path: impl AsRef<Path>) -> LoadResult<Robot> {
             reason,
         }
     })?;
+    mesh.smooth_normals(SMOOTH_CREASE_DEG);
     mesh.make_double_sided();
 
     let mut robot = Robot::new(name.clone());
@@ -432,10 +448,11 @@ fn mesh_from_path(path: &str) -> Result<MeshData, String> {
                 .map_err(|e| format!("Failed to open OBJ file: {}", e))?;
             MeshData::from_obj_str(&text)
         }
-        Some("dae") => Err(format!(
-            "COLLADA (.dae) meshes are not supported; convert {} to STL or OBJ",
-            path
-        )),
+        Some("dae") => {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| format!("Failed to open COLLADA file: {}", e))?;
+            crate::robot::collada::from_dae_str(&text)
+        }
         _ => MeshData::from_stl(path),
     }
 }
@@ -446,10 +463,10 @@ fn mesh_from_bytes(name: &str, bytes: &[u8]) -> Result<MeshData, String> {
             let text = std::str::from_utf8(bytes).map_err(|e| format!("OBJ not utf8: {}", e))?;
             MeshData::from_obj_str(text)
         }
-        Some("dae") => Err(format!(
-            "COLLADA (.dae) meshes are not supported; convert {} to STL or OBJ",
-            name
-        )),
+        Some("dae") => {
+            let text = std::str::from_utf8(bytes).map_err(|e| format!("COLLADA not utf8: {}", e))?;
+            crate::robot::collada::from_dae_str(text)
+        }
         _ => MeshData::from_stl_bytes(bytes),
     }
 }
