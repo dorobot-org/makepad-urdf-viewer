@@ -56,25 +56,36 @@ pub fn from_dae_str(text: &str) -> Result<MeshData, String> {
     for mesh in root.descendants().filter(|n| n.has_tag_name("mesh")) {
         // id -> the floats it holds. `<accessor stride>` is what says whether
         // a source is xyz or uv; a fixed 3 would misread texture coordinates.
-        let mut sources: HashMap<String, (Vec<f32>, usize)> = HashMap::new();
+        // (floats, stride, first-element offset). Parsing is strict: a token
+        // that fails to parse is a malformed file, and dropping it silently
+        // shifts every later component — corrupted geometry that LOOKS loaded
+        // is strictly worse than an error naming the file.
+        let mut sources: HashMap<String, (Vec<f32>, usize, usize)> = HashMap::new();
         for src in mesh.children().filter(|n| n.has_tag_name("source")) {
             let Some(id) = src.attribute("id") else { continue };
             let Some(arr) = src.descendants().find(|n| n.has_tag_name("float_array")) else {
                 continue;
             };
-            let vals: Vec<f32> = arr
-                .text()
-                .unwrap_or_default()
-                .split_ascii_whitespace()
-                .filter_map(|v| v.parse().ok())
-                .collect();
-            let stride = src
-                .descendants()
-                .find(|n| n.has_tag_name("accessor"))
+            let mut vals = Vec::new();
+            for tok in arr.text().unwrap_or_default().split_ascii_whitespace() {
+                vals.push(tok.parse::<f32>().map_err(|_| {
+                    format!("COLLADA float_array in source '{id}' has a non-numeric token '{tok}'")
+                })?);
+            }
+            let acc = src.descendants().find(|n| n.has_tag_name("accessor"));
+            let stride = acc
                 .and_then(|a| a.attribute("stride"))
                 .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(3);
-            sources.insert(id.to_string(), (vals, stride.max(1)));
+                .unwrap_or(3)
+                .clamp(1, 64);
+            // An accessor may start past padding values; ignoring its offset
+            // shifts every tuple by that many floats.
+            let a_off = acc
+                .and_then(|a| a.attribute("offset"))
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(0)
+                .min(vals.len());
+            sources.insert(id.to_string(), (vals, stride, a_off));
         }
 
         // `<vertices>` is an indirection: triangles reference it as VERTEX and
@@ -102,10 +113,14 @@ pub fn from_dae_str(text: &str) -> Result<MeshData, String> {
             for inp in tris.children().filter(|n| n.has_tag_name("input")) {
                 let sem = inp.attribute("semantic").unwrap_or("");
                 let raw = inp.attribute("source").unwrap_or("").trim_start_matches('#');
+                // Offsets index interleaved streams and are tiny in any
+                // real file; capping them is what keeps the index arithmetic
+                // below out of overflow territory.
                 let off = inp
                     .attribute("offset")
                     .and_then(|o| o.parse::<usize>().ok())
-                    .unwrap_or(0);
+                    .unwrap_or(0)
+                    .min(15);
                 stride = stride.max(off + 1);
                 match sem {
                     "VERTEX" => {
@@ -122,14 +137,21 @@ pub fn from_dae_str(text: &str) -> Result<MeshData, String> {
             let Some(pos_src) = pos_src.and_then(|k| sources.get(&k)) else { continue };
             let nrm = nrm_src.and_then(|k| sources.get(&k));
 
-            let p: Vec<usize> = tris
+            let mut p: Vec<usize> = Vec::new();
+            for tok in tris
                 .children()
                 .find(|n| n.has_tag_name("p"))
                 .and_then(|n| n.text())
                 .unwrap_or_default()
                 .split_ascii_whitespace()
-                .filter_map(|v| v.parse().ok())
-                .collect();
+            {
+                // Strict for the same reason as float_array: one dropped
+                // token changes the phase of an interleaved index stream, and
+                // every normal after it is read as a position.
+                p.push(tok.parse::<usize>().map_err(|_| {
+                    format!("COLLADA <p> has a non-numeric index '{tok}'")
+                })?);
+            }
 
             if first_color.is_none() {
                 first_color = tris.attribute("material").and_then(|m| colors.get(m).copied());
@@ -139,26 +161,46 @@ pub fn from_dae_str(text: &str) -> Result<MeshData, String> {
             // a GPU vertex buffer cannot. Welding them back would need a hash
             // per (p,n) pair and buys nothing here — the STL path is already
             // fully de-indexed for the same reason.
+            //
+            // A triangle is validated WHOLE before any of it is emitted. The
+            // first version skipped just the bad corner, which left an index
+            // buffer whose length was not a multiple of three — every
+            // triangle after the bad one was re-grouped from its neighbours'
+            // corners. All index arithmetic is checked: a hostile <p> index
+            // near usize::MAX must fail the bounds test, not wrap around it
+            // into some unrelated in-range vertex.
             let base = (out.vertices.len() / crate::render::mesh::FLOATS_PER_VERTEX) as u32;
             let mut n = 0u32;
-            for tri in p.chunks(stride * 3) {
-                if tri.len() < stride * 3 {
-                    break;
+            let fetch3 = |vals: &[f32], a_off: usize, st: usize, i: usize| -> Option<[f32; 3]> {
+                let k = i.checked_mul(st)?.checked_add(a_off)?;
+                let end = k.checked_add(2)?;
+                if end < vals.len() {
+                    Some([vals[k], vals[k + 1], vals[end]])
+                } else {
+                    None
                 }
+            };
+            for tri in p.chunks_exact(stride * 3) {
+                let mut corners = [([0.0f32; 3], [0.0f32, 0.0, 1.0]); 3];
+                let mut ok = true;
                 for k in 0..3 {
-                    let vi = tri[k * stride + pos_off];
-                    let (pv, ps) = pos_src;
-                    if vi * ps + 2 >= pv.len() + 1 && vi * ps + 2 > pv.len() - 1 {
-                        continue;
-                    }
-                    let mut pos = [pv[vi * ps], pv[vi * ps + 1], pv[vi * ps + 2]];
+                    let (pv, ps, pa) = pos_src;
+                    let Some(pos) = fetch3(pv, *pa, *ps, tri[k * stride + pos_off]) else {
+                        ok = false;
+                        break;
+                    };
                     let mut nor = [0.0f32, 0.0, 1.0];
-                    if let (Some((nv, ns)), true) = (nrm, nrm_off != usize::MAX) {
-                        let ni = tri[k * stride + nrm_off];
-                        if ni * ns + 2 < nv.len() {
-                            nor = [nv[ni * ns], nv[ni * ns + 1], nv[ni * ns + 2]];
+                    if let (Some((nv, ns, na)), true) = (nrm, nrm_off != usize::MAX) {
+                        if let Some(v) = fetch3(nv, *na, *ns, tri[k * stride + nrm_off]) {
+                            nor = v;
                         }
                     }
+                    corners[k] = (pos, nor);
+                }
+                if !ok {
+                    continue;
+                }
+                for (mut pos, mut nor) in corners {
                     if unit != 1.0 {
                         pos = [pos[0] * unit, pos[1] * unit, pos[2] * unit];
                     }
@@ -200,7 +242,7 @@ fn effect_colors(root: &roxmltree::Node) -> HashMap<String, [f32; 4]> {
             }
         }
     }
-    let mut out = HashMap::new();
+    let mut by_id = HashMap::new();
     for m in root.descendants().filter(|n| n.has_tag_name("material")) {
         let Some(id) = m.attribute("id") else { continue };
         if let Some(url) = m
@@ -209,13 +251,27 @@ fn effect_colors(root: &roxmltree::Node) -> HashMap<String, [f32; 4]> {
             .and_then(|i| i.attribute("url"))
         {
             if let Some(c) = fx.get(url.trim_start_matches('#')) {
-                // `<triangles material=>` names a binding symbol, which
-                // exporters overwhelmingly set to the material id with a
-                // suffix. Register both so either resolves.
-                out.insert(id.to_string(), *c);
-                out.insert(format!("{id}-material"), *c);
+                by_id.insert(id.to_string(), *c);
             }
         }
+    }
+    // `<triangles material=>` names a BINDING SYMBOL, not a material id. The
+    // symbol -> id mapping lives in the visual scene's <instance_material
+    // symbol=".." target="#id">, so resolve through it; a file whose symbol
+    // and id differ (perfectly legal) loses its colour otherwise. The id and
+    // the Blender-style `id-material` guess stay as fallbacks for exporters
+    // that skip <bind_material>.
+    let mut out = HashMap::new();
+    for im in root.descendants().filter(|n| n.has_tag_name("instance_material")) {
+        if let (Some(sym), Some(target)) = (im.attribute("symbol"), im.attribute("target")) {
+            if let Some(c) = by_id.get(target.trim_start_matches('#')) {
+                out.insert(sym.to_string(), *c);
+            }
+        }
+    }
+    for (id, c) in &by_id {
+        out.entry(id.clone()).or_insert(*c);
+        out.entry(format!("{id}-material")).or_insert(*c);
     }
     out
 }

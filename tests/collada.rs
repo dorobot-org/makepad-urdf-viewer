@@ -66,3 +66,147 @@ fn junk_is_refused_rather_than_half_parsed() {
     assert!(from_dae_str("not xml at all").is_err());
     assert!(from_dae_str("<COLLADA></COLLADA>").is_err());
 }
+
+// ---- regressions from the adversarial review ------------------------------
+
+fn wrap(mesh_inner: &str, extra: &str) -> String {
+    format!(
+        r##"<?xml version="1.0"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  {extra}
+  <library_geometries><geometry id="g"><mesh>{mesh_inner}</mesh></geometry></library_geometries>
+</COLLADA>"##
+    )
+}
+
+const TRI_INPUTS: &str = r##"<input semantic="VERTEX" source="#v" offset="0"/>"##;
+
+fn positions(vals: &str, count: usize, extra_accessor: &str) -> String {
+    format!(
+        r##"<source id="p"><float_array id="pa" count="{count}">{vals}</float_array>
+           <technique_common><accessor source="#pa" count="{c}" stride="3"{extra_accessor}>
+           <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+           </accessor></technique_common></source>
+           <vertices id="v"><input semantic="POSITION" source="#p"/></vertices>"##,
+        c = count / 3
+    )
+}
+
+#[test]
+fn five_float_array_with_index_one_does_not_panic() {
+    // vi*ps+2 == pv.len() was accepted by the old guard and panicked.
+    let dae = wrap(
+        &format!(
+            "{}<triangles count=\"1\">{}<p>0 1 0</p></triangles>",
+            positions("0 0 0 1 1", 5, ""),
+            TRI_INPUTS
+        ),
+        "",
+    );
+    // Must not panic. The damaged triangle is dropped whole, so no geometry
+    // survives and the parse reports that rather than emitting fragments.
+    let r = from_dae_str(&dae);
+    assert!(r.is_err() || r.unwrap().indices.len() % 3 == 0);
+}
+
+#[test]
+fn empty_float_array_does_not_underflow() {
+    let dae = wrap(
+        &format!(
+            "{}<triangles count=\"1\">{}<p>0 0 0</p></triangles>",
+            positions("", 0, ""),
+            TRI_INPUTS
+        ),
+        "",
+    );
+    let _ = from_dae_str(&dae); // must not panic
+}
+
+#[test]
+fn a_bad_corner_drops_its_whole_triangle() {
+    // Old behaviour skipped one corner: 5 vertices emitted, triangles
+    // regrouped across the damage. Now: the bad triangle vanishes, the good
+    // one survives intact.
+    let dae = wrap(
+        &format!(
+            "{}<triangles count=\"2\">{}<p>0 1 99 0 1 2</p></triangles>",
+            positions("0 0 0  1 0 0  0 1 0", 9, ""),
+            TRI_INPUTS
+        ),
+        "",
+    );
+    let m = from_dae_str(&dae).expect("good triangle survives");
+    assert_eq!(m.indices.len(), 3, "exactly the valid triangle");
+}
+
+#[test]
+fn huge_indices_fail_bounds_not_wrap() {
+    let big = usize::MAX / 3;
+    let dae = wrap(
+        &format!(
+            "{}<triangles count=\"1\">{}<p>{big} 0 1</p></triangles>",
+            positions("0 0 0  1 0 0  0 1 0", 9, ""),
+            TRI_INPUTS
+        ),
+        "",
+    );
+    let r = from_dae_str(&dae);
+    assert!(r.is_err() || r.unwrap().indices.is_empty());
+}
+
+#[test]
+fn accessor_offset_skips_padding() {
+    // First float is padding; offset=1 must skip it. Reading it as X shifts
+    // every tuple.
+    let dae = wrap(
+        &format!(
+            "{}<triangles count=\"1\">{}<p>0 1 2</p></triangles>",
+            positions("99 0 0 0  1 0 0  0 1 0", 10, r##" offset="1""##),
+            TRI_INPUTS
+        ),
+        "",
+    );
+    let m = from_dae_str(&dae).expect("offset accessor parses");
+    // Vertex 0 must be (0,0,0) — not (99,0,0).
+    assert!(m.vertices[0].abs() < 1e-6, "padding leaked in as X: {}", m.vertices[0]);
+}
+
+#[test]
+fn non_numeric_index_is_an_error_not_a_shift() {
+    let dae = wrap(
+        &format!(
+            "{}<triangles count=\"1\">{}<p>0 x 2</p></triangles>",
+            positions("0 0 0  1 0 0  0 1 0", 9, ""),
+            TRI_INPUTS
+        ),
+        "",
+    );
+    assert!(from_dae_str(&dae).is_err());
+}
+
+#[test]
+fn material_binding_symbol_resolves_through_instance_material() {
+    // symbol "S" != material id "M": legal, and the whole point of
+    // <bind_material>.
+    let extra = r##"
+  <library_effects><effect id="e"><profile_COMMON><technique sid="t"><lambert>
+    <diffuse><color>0.2 0.4 0.6 1</color></diffuse>
+  </lambert></technique></profile_COMMON></effect></library_effects>
+  <library_materials><material id="M"><instance_effect url="#e"/></material></library_materials>
+  <library_visual_scenes><visual_scene id="vs"><node id="n">
+    <instance_geometry url="#g"><bind_material><technique_common>
+      <instance_material symbol="S" target="#M"/>
+    </technique_common></bind_material></instance_geometry>
+  </node></visual_scene></library_visual_scenes>"##;
+    let dae = wrap(
+        &format!(
+            "{}<triangles material=\"S\" count=\"1\">{}<p>0 1 2</p></triangles>",
+            positions("0 0 0  1 0 0  0 1 0", 9, ""),
+            TRI_INPUTS
+        ),
+        extra,
+    );
+    let m = from_dae_str(&dae).expect("parses");
+    let c = m.color.expect("symbol resolved to the material colour");
+    assert!((c[0] - 0.2).abs() < 1e-5 && (c[2] - 0.6).abs() < 1e-5);
+}

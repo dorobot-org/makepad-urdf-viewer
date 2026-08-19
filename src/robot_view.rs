@@ -1142,8 +1142,14 @@ impl RobotView {
             // translates with it, so the shadow crawled against the very
             // ground it should have been lying still on. Snapping is per
             // cascade because each has its own texel size.
+            //
+            // Measured at a FIXED world point, not the box centre. The view
+            // was built to look at the centre, so the centre projects to
+            // (0,0) by construction and snapping it corrected nothing — the
+            // no-op review caught. The world origin's projected position is
+            // where the box's translation actually shows up.
             let cw = SHADOW_MAP_SIZE as f32 * 0.5;
-            let o = vp.project_point3(*c);
+            let o = vp.project_point3(glam::Vec3::ZERO);
             let dx = (o.x * cw).round() / cw - o.x;
             let dy = (o.y * cw).round() / cw - o.y;
             let vp = glam::Mat4::from_translation(glam::Vec3::new(dx, dy, 0.0)) * vp;
@@ -1160,19 +1166,6 @@ impl RobotView {
         glam::Mat4::from_cols_array(&self.csm_vp[CSM_N - 1].v)
     }
 
-    /// Maps a cascade's clip x into its own horizontal slot of the shared
-    /// map, so N cascades share ONE texture and one binding.
-    ///
-    /// Baked into the projection rather than set as a viewport: this dialect
-    /// exposes no sub-rect on a pass, and every cascade has to be rasterised
-    /// inside a single begin/end anyway — a second `begin_pass` would clear
-    /// what the first one drew.
-    fn csm_slot(ci: usize) -> glam::Mat4 {
-        let n = CSM_N as f32;
-        let off = (2.0 * ci as f32 + 1.0 - n) / n;
-        glam::Mat4::from_translation(glam::Vec3::new(off, 0.0, 0.0))
-            * glam::Mat4::from_scale(glam::Vec3::new(1.0 / n, 1.0, 1.0))
-    }
 
     /// Render every link (and the terrain) into the shadow map from the
     /// light's point of view. Same geometry as the lit pass — only the
@@ -1216,8 +1209,14 @@ impl RobotView {
             // rides on the projection, so all that changes per cascade is
             // light_vp.
             for ci in 0..CSM_N {
-            self.draw_shadow.light_vp =
-                m4(Self::csm_slot(ci) * glam::Mat4::from_cols_array(&self.csm_vp[ci].v));
+            // The slot is a separate uniform rather than baked into light_vp:
+            // baked in, the hardware clip volume spans the WHOLE atlas, so
+            // geometry outside this cascade's own box (a big external ground
+            // plane, say) rasterised into the neighbouring cascade's slot.
+            // The shader clips against the pre-slot box itself and discards.
+            self.draw_shadow.light_vp = self.csm_vp[ci];
+            let n = CSM_N as f32;
+            self.draw_shadow.slot = vec4((2.0 * ci as f32 + 1.0 - n) / n, 1.0 / n, 0.0, 0.0);
             if let Some(robot) = &self.robot {
                 for (i, _link) in robot.links.iter().enumerate() {
                     let Some(Some(slot)) = self.geometries.get(i) else { continue };

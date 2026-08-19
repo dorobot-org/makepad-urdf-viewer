@@ -142,6 +142,12 @@ fn build_robot_from_urdf(urdf: &urdf_rs::Robot, assets_base: &str) -> LoadResult
                             bounds_min[i] = bounds_min[i].min(updated_bounds.0[i]);
                             bounds_max[i] = bounds_max[i].max(updated_bounds.1[i]);
                         }
+                        // A colour the mesh format itself carried (COLLADA
+                        // does) fills in when the URDF names none. The URDF
+                        // material stays the stronger voice when both exist.
+                        if robot_link.color.is_none() {
+                            robot_link.color = mesh.color;
+                        }
                         link_meshes.push(mesh);
                     }
                     Err(e) => {
@@ -380,7 +386,7 @@ pub fn load_any(path: impl AsRef<Path>) -> LoadResult<Robot> {
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|| ".".to_string());
     match extension_of(&path.to_string_lossy()).as_deref() {
-        Some("stl") | Some("obj") => load_mesh_as_robot(path),
+        Some("stl") | Some("obj") | Some("dae") => load_mesh_as_robot(path),
         _ => load_robot(path, &assets),
     }
 }

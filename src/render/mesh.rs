@@ -633,6 +633,10 @@ impl MeshData {
         let mut combined = MeshData {
             bounds_min: [f32::MAX; 3],
             bounds_max: [f32::MIN; 3],
+            // The first colour any part brought along survives the merge —
+            // ..Default::default() silently reset it to None, which cut the
+            // one wire COLLADA colours had toward the screen.
+            color: meshes.iter().find_map(|m| m.color),
             ..Default::default()
         };
 

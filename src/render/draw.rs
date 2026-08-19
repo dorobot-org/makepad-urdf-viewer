@@ -26,6 +26,7 @@ script_mod! {
         draw_list: uniform_buffer(draw.DrawListUniforms)
         geom: vertex_buffer(geom.IcoVertex, geom.IcoGeom)
         v_depth: varying(f32)
+        v_lx: varying(f32)
 
         vertex: fn() {
             let local_pos = vec3(
@@ -39,10 +40,23 @@ script_mod! {
             // convention) — mapping it again with *0.5+0.5 squeezed the whole
             // scene into the top half of an 8-bit target.
             self.v_depth = clip.z
-            self.vertex_pos = clip
+            // The cascade's OWN clip x rides to the pixel stage, because the
+            // slot transform below widens the hardware clip volume to the
+            // whole atlas: without the fragment-side test, geometry past this
+            // cascade's edge rasterises into the neighbour's slot.
+            self.v_lx = clip.x
+            self.vertex_pos = vec4(
+                clip.x * self.slot.y + self.slot.x,
+                clip.y,
+                clip.z,
+                clip.w
+            )
         }
 
         pixel: fn() -> vec4f {
+            if abs(self.v_lx) > 1.0 {
+                discard
+            }
             // 16-bit depth packed into G (hi byte) and A (lo byte): an 8-bit
             // map quantises at 1/255 = 0.004, the same size as a usable bias,
             // so single-channel depth acnes over every surface. G and A are
@@ -334,8 +348,11 @@ script_mod! {
             // Scaled by the same key_gain the direct term uses, so the
             // reflection and the lighting agree about how bright the lamp is.
             let sun_d = max(dot(normalize(refl), key_dir), 0.0)
+            // Gated by the lamp SWITCH, not just key_gain: gain bottoms out
+            // at 0.35 with the lamp off, so polished parts kept reflecting a
+            // sun the sky no longer showed.
             let sun = (pow(sun_d, 96.0) * 1.1 + pow(sun_d, 16.0) * 0.35)
-                * (1.0 - rough) * key_gain
+                * (1.0 - rough) * key_gain * lamp
             let env_r = env_r + sun
             let env_g = env_g + sun * 0.96
             let env_b = env_b + sun * 0.88
@@ -603,10 +620,14 @@ pub mod composite_shader {
                 // Perspective depth is wildly non-linear — the same millimetre
                 // is a huge delta near the camera and nothing far away. Divide
                 // by a local scale so one threshold works across the frame.
-                let dscale = max(1.0 - dc, 0.0002)
+                let dscale = max(1.0 - dc, 0.00002)
                 let curv = lap / dscale
                 // Nothing was drawn here (cleared depth): no geometry, no AO.
-                let onbody = step(dc, 0.99999)
+                // The threshold is one f32 step under 1.0 — anything the
+                // depth buffer can actually hold short of the clear value is
+                // geometry, however far away; the previous 0.99999 wrote off
+                // a real band of far-plane fragments as background.
+                let onbody = step(dc, 0.9999999)
                 let cavity = clamp(0.0 - curv * self.edge_ao.z, 0.0, 1.0) * onbody
                 let ridge = clamp(curv * self.edge_ao.w, 0.0, 1.0) * onbody
                 let shade = clamp(1.0 - cavity - ridge, 0.0, 1.0)
@@ -671,10 +692,28 @@ pub mod composite_shader {
         mod.draw.DrawSceneComposite = mod.std.set_type_default() do #(DrawSceneComposite::script_shader(vm)){
             ..mod.draw.DrawQuad
             scene_texture: texture_2d(float)
+            depth_texture: texture_2d(float)
 
             pixel: fn() {
                 let s = self.scene_texture.sample_as_bgra(self.pos)
                 let scene = vec4(s.z, s.y, s.x, s.w)
+                // Cavity AO + edges — the same depth Laplacian as the native
+                // variant; the review found this variant had been skipped, so
+                // wasm silently rendered without the effect.
+                let ex = self.edge_ao.x
+                let ey = self.edge_ao.y
+                let dc = self.depth_texture.sample(self.pos).x
+                let dl = self.depth_texture.sample(vec2(self.pos.x - ex, self.pos.y)).x
+                let dr = self.depth_texture.sample(vec2(self.pos.x + ex, self.pos.y)).x
+                let du = self.depth_texture.sample(vec2(self.pos.x, self.pos.y - ey)).x
+                let dd = self.depth_texture.sample(vec2(self.pos.x, self.pos.y + ey)).x
+                let lap = (dl + dr + du + dd) * 0.25 - dc
+                let dscale = max(1.0 - dc, 0.00002)
+                let curv = lap / dscale
+                let onbody = step(dc, 0.9999999)
+                let cavity = clamp(0.0 - curv * self.edge_ao.z, 0.0, 1.0) * onbody
+                let ridge = clamp(curv * self.edge_ao.w, 0.0, 1.0) * onbody
+                let shade = clamp(1.0 - cavity - ridge, 0.0, 1.0)
                 let ndc_x = self.pos.x * 2.0 - 1.0
                 let ndc_y = 1.0 - self.pos.y * 2.0
                 let dir = normalize(
@@ -718,9 +757,9 @@ pub mod composite_shader {
                 let bg = bg0 + (vec3(1.0, 0.99, 0.94) * disc
                     + vec3(1.0, 0.88, 0.62) * halo) * self.light_dir.w
                 return vec4(
-                    scene.x + bg.x * (1.0 - scene.w),
-                    scene.y + bg.y * (1.0 - scene.w),
-                    scene.z + bg.z * (1.0 - scene.w),
+                    scene.x * shade + bg.x * (1.0 - scene.w),
+                    scene.y * shade + bg.y * (1.0 - scene.w),
+                    scene.z * shade + bg.z * (1.0 - scene.w),
                     1.0
                 )
             }
@@ -930,6 +969,11 @@ pub struct DrawShadowDepth {
     pub scale: Vec3f,
     #[live]
     pub light_vp: Mat4f,
+    /// x = atlas-slot offset in clip space, y = 1/CSM_N. Applied in the
+    /// vertex shader AFTER the cascade's own clip x is captured for the
+    /// fragment-side containment test.
+    #[live(vec4(0.0, 1.0, 0.0, 0.0))]
+    pub slot: Vec4f,
     /// Per-cascade light view-projection, without the atlas slot: the shader
     /// tests containment in each cascade's own clip box before mapping into
     /// the shared map.
